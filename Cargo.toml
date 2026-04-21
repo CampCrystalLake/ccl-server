@@ -1,0 +1,86 @@
+[package]
+name = "ccl-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+description = "host your own friday the 13th private server on ps4, one binary, no dependencies"
+repository = "https://github.com/CampCrystalLake/ccl-server"
+authors = ["Camp Crystal Lake <hi@campcrystallake.xyz>"]
+
+[package.metadata.wix]
+upgrade-guid = "1401E903-2986-45D1-995E-4697D286D40C"
+path-guid = "27F223E9-C5BE-4572-B2F0-CE6A76F2A446"
+license = false
+eula = false
+
+[dependencies]
+axum = "0.8.8"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+clap = { version = "4.6.0", features = ["derive", "env"] }
+futures = "0.3.32"
+rand = "0.10.0"
+rcgen = "0.14.7"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.11.0"
+tokio = { version = "1.51.0", features = ["full"] }
+uuid = { version = "1.23.0", features = ["v4"] }
+
+[[bin]]
+name = "ccl-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+http = "1"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+cloned_instead_of_copied = "warn"
+flat_map_option = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+manual_ok_or = "warn"
+manual_string_new = "warn"
+map_unwrap_or = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+fn_params_excessive_bools = "warn"
+needless_pass_by_value = "warn"
+trivially_copy_pass_by_ref = "warn"
+unused_self = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_clone = "warn"
+too_many_arguments = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+enum_variant_names = "warn"
+type_complexity = "warn"
+dbg_macro = "warn"
+empty_drop = "warn"
+exit = "warn"
+get_unwrap = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+rest_pat_in_fully_bound_structs = "warn"

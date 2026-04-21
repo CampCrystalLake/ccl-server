@@ -1,0 +1,45 @@
+name: VirusTotal
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.event.release.tag_name }}" --dir dist --pattern '*.exe' --pattern '*.msi'
+          ls -la dist
+
+      - uses: crazy-max/ghaction-virustotal@v5
+        id: vt
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            dist/*.exe
+            dist/*.msi
+
+      - name: Append VirusTotal links to release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          VT_RESULTS: ${{ steps.vt.outputs.analysis }}
+        run: |
+          current=$(gh release view "$TAG" --json body --jq .body)
+          {
+            printf '%s\n\n' "$current"
+            printf '## VirusTotal\n\n'
+            printf '%s' "$VT_RESULTS" | tr ',' '\n' | while IFS='=' read -r name url; do
+              printf -- '- [%s](%s)\n' "$name" "$url"
+            done
+          } > notes.md
+          gh release edit "$TAG" --notes-file notes.md
