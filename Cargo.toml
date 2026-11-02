@@ -1,8 +1,7 @@
 [package]
 name = "ccl-server"
 version = "0.3.0"
-edition = "2024"
-rust-version = "1.92"
+edition = "2021"
 license = "MIT"
 description = "Friday the 13th private server backend"
 repository = "https://github.com/khaled934533-source/f13-custom-backend"
@@ -17,17 +16,9 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
 
-# Protocol / networking
 bytes = "1"
 thiserror = "2"
 
 [[bin]]
 name = "ccl-server"
 path = "src/main.rs"
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = "symbols"
-panic = "abort"
