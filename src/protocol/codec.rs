@@ -135,3 +135,41 @@ pub fn decode_frame<T: DeserializeOwned>(
 
     Ok((message_id, request_id, payload))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_round_trip_preserves_header_and_payload() {
+        let payload = serde_json::json!({"type": "Heartbeat", "sequence": 42});
+        let encoded = encode_frame(0x0002, 1234, &payload).unwrap();
+        let (message_id, request_id, decoded) =
+            decode_frame::<serde_json::Value>(&encoded).unwrap();
+        assert_eq!(message_id, 0x0002);
+        assert_eq!(request_id, 1234);
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn decoder_rejects_invalid_magic() {
+        let mut frame = encode_frame(1, 1, &serde_json::json!({})).unwrap();
+        frame[0] = b'X';
+        assert!(decode_frame::<serde_json::Value>(&frame).is_err());
+    }
+
+    #[test]
+    fn decoder_rejects_truncated_payload() {
+        let mut frame = encode_frame(1, 1, &serde_json::json!({"ok": true})).unwrap();
+        frame.pop();
+        assert!(decode_frame::<serde_json::Value>(&frame).is_err());
+    }
+
+    #[test]
+    fn decoder_rejects_trailing_bytes() {
+        let mut frame = encode_frame(1, 1, &serde_json::json!({})).unwrap();
+        frame.push(0);
+        assert!(decode_frame::<serde_json::Value>(&frame).is_err());
+    }
+}
