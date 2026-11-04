@@ -758,8 +758,8 @@ async fn record_offline_match_handler(
         _ => unreachable!(),
     };
 
-    if inserted {
-        if let Err(error) = sqlx::query(
+    if inserted
+        && let Err(error) = sqlx::query(
             r#"
             INSERT OR IGNORE INTO klay_achievements (user_id, achievement_id)
             VALUES (?, ?)
@@ -769,13 +769,12 @@ async fn record_offline_match_handler(
         .bind(achievement_id)
         .execute(&state.db)
         .await
-        {
-            eprintln!("Failed to record KLAY achievement: {error}");
-            return Json(json!({
-                "success": false,
-                "error": "achievement_save_failed"
-            }));
-        }
+    {
+        eprintln!("Failed to record KLAY achievement: {error}");
+        return Json(json!({
+            "success": false,
+            "error": "achievement_save_failed"
+        }));
     }
 
     let counselor_matches: i64 = sqlx::query_scalar(
