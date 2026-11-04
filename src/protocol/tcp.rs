@@ -484,21 +484,26 @@ async fn handle_message(
                 };
             };
 
-            if let Err(error) = sqlx::query(
+            match sqlx::query(
                 "UPDATE sessions SET last_seen = CURRENT_TIMESTAMP WHERE user_id = ?",
             )
             .bind(user_id)
             .execute(db)
             .await
             {
-                eprintln!("TCP heartbeat update failed: {error}");
-                return ServerMessage::Error {
-                    code: 1001,
-                    message: "heartbeat_failed".to_string(),
-                };
+                Ok(result) if result.rows_affected() > 0 => ServerMessage::Pong,
+                Ok(_) => ServerMessage::Error {
+                    code: 1020,
+                    message: "invalid_session_token".to_string(),
+                },
+                Err(error) => {
+                    eprintln!("TCP heartbeat update failed: {error}");
+                    ServerMessage::Error {
+                        code: 1001,
+                        message: "heartbeat_failed".to_string(),
+                    }
+                }
             }
-
-            ServerMessage::Pong
         }
 
         ClientMessage::CreateSession => {
