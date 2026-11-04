@@ -632,9 +632,7 @@ async fn handle_message(
             }
         }
 
-        ClientMessage::JoinSession {
-            session_id,
-        } => {
+        ClientMessage::JoinSession { session_id } => {
             if state.session_id.is_some() {
                 return ServerMessage::Error {
                     code: 1022,
@@ -642,150 +640,89 @@ async fn handle_message(
                 };
             }
 
-            let Some(user_id) =
-                state.user_id.clone()
-            else {
+            let Some(user_id) = state.user_id.clone() else {
                 return ServerMessage::Error {
                     code: 1002,
-                    message:
-                        "authentication_required"
-                            .to_string(),
+                    message: "authentication_required".to_string(),
                 };
             };
 
-            let lobby =
-                sqlx::query_as::<_, (String, i32)>(
-                    r#"
-                    SELECT name, max_players
-                    FROM lobbies
-                    WHERE lobby_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_optional(db)
-                .await;
-
-            let Some((_name, max_players)) =
-                lobby.ok().flatten()
-            else {
-                return ServerMessage::Error {
-                    code: 1006,
-                    message:
-                        "session_not_found"
-                            .to_string(),
-                };
-            };
-
-            let count: i64 =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*)
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_one(db)
-                .await
-                .unwrap_or(0);
-
-            let already_joined: i64 =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*)
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    AND user_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .bind(&user_id)
-                .fetch_one(db)
-                .await
-                .unwrap_or(0);
-
-            if already_joined == 0
-                && count >= max_players as i64
-            {
-                return ServerMessage::Error {
-                    code: 1007,
-                    message:
-                        "session_full"
-                            .to_string(),
-                };
-            }
-
-            if already_joined == 0 {
-                let result = sqlx::query(
-                    r#"
-                    INSERT INTO lobby_players (
-                        lobby_id,
-                        user_id,
-                        ready
-                    )
-                    VALUES (?, ?, 0)
-                    "#,
-                )
-                .bind(&session_id)
-                .bind(&user_id)
-                .execute(db)
-                .await;
-
-                if let Err(error) = result {
-                    eprintln!(
-                        "Failed to join session: {error}"
-                    );
-
+            let mut tx = match db.begin().await {
+                Ok(tx) => tx,
+                Err(error) => {
+                    eprintln!("Failed to begin TCP lobby join: {error}");
                     return ServerMessage::Error {
-                        code: 1008,
-                        message:
-                            "session_join_failed"
-                                .to_string(),
+                        code: 1009,
+                        message: "session_join_failed".to_string(),
                     };
                 }
-            }
+            };
 
-            let existing_ready: Option<i64> =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT ready
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    AND user_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .bind(&user_id)
-                .fetch_optional(db)
-                .await
-                .unwrap_or(None);
-
-            state.session_id =
-                Some(session_id.clone());
-
-            state.ready =
-                existing_ready.unwrap_or(0) != 0;
-
-            state.started = false;
-
-            match load_session(
-                db,
-                &session_id,
+            let lobby = sqlx::query_as::<_, (String, i32)>(
+                "SELECT name, max_players FROM lobbies WHERE lobby_id = ?",
             )
+            .bind(&session_id)
+            .fetch_optional(&mut *tx)
+            .await;
+
+            let Some((_name, _max_players)) = (match lobby {
+                Ok(lobby) => lobby,
+                Err(error) => {
+                    eprintln!("Failed to load TCP lobby: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_join_failed".to_string(),
+                    };
+                }
+            }) else {
+                return ServerMessage::Error {
+                    code: 1006,
+                    message: "session_not_found".to_string(),
+                };
+            };
+
+            if let Err(error) = sqlx::query(
+                "INSERT OR IGNORE INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
+            )
+            .bind(&session_id)
+            .bind(&user_id)
+            .execute(&mut *tx)
             .await
             {
-                Ok(session) => {
-                    ServerMessage::SessionJoined {
-                        session,
-                    }
-                }
+                eprintln!("Failed to join TCP lobby: {error}");
+                let message = if error.to_string().contains("lobby_full") {
+                    "session_full"
+                } else {
+                    "session_join_failed"
+                };
+                return ServerMessage::Error {
+                    code: if message == "session_full" { 1007 } else { 1008 },
+                    message: message.to_string(),
+                };
+            }
 
-                Err(_) => {
+            if let Err(error) = tx.commit().await {
+                eprintln!("Failed to commit TCP lobby join: {error}");
+                return ServerMessage::Error {
+                    code: 1009,
+                    message: "session_join_failed".to_string(),
+                };
+            }
+
+            match load_session(db, &session_id).await {
+                Ok(session) => {
+                    state.session_id = Some(session_id);
+                    state.ready = session.players.iter()
+                        .find(|player| player.id == user_id)
+                        .is_some_and(|player| player.ready);
+                    state.started = session.started;
+                    ServerMessage::SessionJoined { session }
+                }
+                Err(error) => {
+                    eprintln!("Failed to load joined TCP session: {error}");
                     ServerMessage::Error {
                         code: 1005,
-                        message:
-                            "session_load_failed"
-                                .to_string(),
+                        message: "session_load_failed".to_string(),
                     }
                 }
             }
