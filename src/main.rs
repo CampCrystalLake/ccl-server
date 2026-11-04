@@ -146,6 +146,7 @@ async fn main() {
             name TEXT NOT NULL,
             host_user_id TEXT NOT NULL,
             max_players INTEGER NOT NULL,
+            started INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         "#,
@@ -153,6 +154,22 @@ async fn main() {
     .execute(&db)
     .await
     .expect("Failed to create lobbies table");
+
+    let started_column: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('lobbies') WHERE name = 'started'",
+    )
+    .fetch_optional(&db)
+    .await
+    .expect("Failed to inspect lobbies table");
+
+    if started_column.is_none() {
+        sqlx::query(
+            "ALTER TABLE lobbies ADD COLUMN started INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to add started column to lobbies");
+    }
 
     sqlx::query(
         r#"
@@ -1019,9 +1036,9 @@ async fn get_lobby_handler(
     State(state): State<AppState>,
     Path(lobby_id): Path<String>,
 ) -> Json<Value> {
-    let lobby = sqlx::query_as::<_, (String, String, String, i32)>(
+    let lobby = sqlx::query_as::<_, (String, String, String, i32, i64)>(
         r#"
-        SELECT lobby_id, name, host_user_id, max_players
+        SELECT lobby_id, name, host_user_id, max_players, started
         FROM lobbies
         WHERE lobby_id = ?
         "#,
@@ -1030,7 +1047,7 @@ async fn get_lobby_handler(
     .fetch_optional(&state.db)
     .await;
 
-    let Some((lobby_id, name, host_user_id, max_players)) = lobby.ok().flatten() else {
+    let Some((lobby_id, name, host_user_id, max_players, started)) = lobby.ok().flatten() else {
         return Json(json!({
             "success": false,
             "error": "lobby_not_found"
@@ -1073,7 +1090,8 @@ async fn get_lobby_handler(
             "hostUserId": host_user_id,
             "maxPlayers": max_players,
             "players": player_count,
-            "status": if player_count >= max_players as i64 { "full" } else { "waiting" },
+            "status": if started != 0 { "started" } else if player_count >= max_players as i64 { "full" } else { "waiting" },
+            "started": started != 0,
             "members": player_list
         }
     }))
@@ -1112,14 +1130,14 @@ async fn join_lobby_handler(
         }
     };
 
-    let lobby = sqlx::query_as::<_, (String, String, i32)>(
-        "SELECT name, host_user_id, max_players FROM lobbies WHERE lobby_id = ?",
+    let lobby = sqlx::query_as::<_, (String, String, i32, i64)>(
+        "SELECT name, host_user_id, max_players, started FROM lobbies WHERE lobby_id = ?",
     )
     .bind(&lobby_id)
     .fetch_optional(&mut *tx)
     .await;
 
-    let (name, host_user_id, max_players) = match lobby {
+    let (name, host_user_id, max_players, started) = match lobby {
         Ok(Some(lobby)) => lobby,
         Ok(None) => return Json(json!({"success": false, "error": "lobby_not_found"})),
         Err(error) => {
@@ -1127,6 +1145,10 @@ async fn join_lobby_handler(
             return Json(json!({"success": false, "error": "database_error"}));
         }
     };
+
+    if started != 0 {
+        return Json(json!({"success": false, "error": "lobby_started"}));
+    }
 
     let inserted = match sqlx::query(
         "INSERT OR IGNORE INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
