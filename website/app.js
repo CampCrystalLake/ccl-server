@@ -1,5 +1,27 @@
-document.getElementById("year").textContent = new Date().getFullYear();
+const year = document.getElementById("year");
+if (year) year.textContent = String(new Date().getFullYear());
 
-document.getElementById("epic-login").addEventListener("click", () => {
-  window.alert("تسجيل الدخول عبر Epic لم يُفعّل بعد. سيتم تفعيله بعد إعداد OAuth وربط Callback آمن بخادم KLAY.");
-});
+const loginButton = document.getElementById("epic-login");
+if (loginButton) {
+  loginButton.addEventListener("click", () => {
+    loginButton.disabled = true;
+    loginButton.textContent = "جارٍ تحويلك إلى Epic...";
+    window.location.assign("/auth/epic/login");
+  });
+}
+
+async function loadEpicAccount() {
+  try {
+    const response = await fetch("/auth/epic/me", { credentials: "same-origin" });
+    if (!response.ok) return;
+    const account = await response.json();
+    const status = document.getElementById("epic-account");
+    if (status && account.success) {
+      status.textContent = "مسجّل الدخول: " + account.displayName;
+      status.hidden = false;
+    }
+  } catch (error) {
+    console.error("Could not load KLAY account:", error);
+  }
+}
+loadEpicAccount();
