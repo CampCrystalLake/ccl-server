@@ -7,23 +7,21 @@ description = "Friday the 13th private server backend"
 repository = "https://github.com/khaled934533-source/f13-custom-backend"
 authors = ["KLAY"]
 
-[dependencies]
-axum = "0.7"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
-tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
-uuid = { version = "1", features = ["v4"] }
-
-bytes = "1"
-thiserror = "2"
-
-# Stable WiX identifiers must remain unchanged across releases so Windows
-# can recognize upgrades and reliably remove the installed PATH component.
+# Stable WiX identifiers must remain unchanged across releases.
 [package.metadata.wix]
 upgrade-guid = "1401E903-2986-45D1-995E-4697D286D40C"
 path-guid = "27F223E9-C5BE-4572-B2F0-CE6A76F2A446"
+
+[dependencies]
+axum = "0.7"
+bytes = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "ccl-server"
