@@ -118,63 +118,25 @@ async fn handle_client(
         }
 
         if &header[0..4] != b"KLAY" {
-            eprintln!(
-                "TCP invalid magic: {:?}",
-                &header[0..4]
+            cleanup_connection(&db, &mut state).await;
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid packet magic",
+                )
+                .into(),
             );
-
-            let response =
-                ServerMessage::Error {
-                    code: 1100,
-                    message:
-                        "invalid_magic"
-                            .to_string(),
-                };
-
-            let response_frame =
-                encode_frame(
-                    0x8000,
-                    0,
-                    &response,
-                )?;
-
-            stream
-                .write_all(&response_frame)
-                .await?;
-
-            stream.flush().await?;
-
-            continue;
         }
 
         if header[4] != 1 {
-            eprintln!(
-                "TCP unsupported protocol version: {}",
-                header[4]
+            cleanup_connection(&db, &mut state).await;
+            return Err(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unsupported protocol version",
+                )
+                .into(),
             );
-
-            let response =
-                ServerMessage::Error {
-                    code: 1101,
-                    message:
-                        "unsupported_protocol_version"
-                            .to_string(),
-                };
-
-            let response_frame =
-                encode_frame(
-                    0x8000,
-                    0,
-                    &response,
-                )?;
-
-            stream
-                .write_all(&response_frame)
-                .await?;
-
-            stream.flush().await?;
-
-            continue;
         }
 
         let payload_len = u32::from_be_bytes([
@@ -399,6 +361,13 @@ async fn handle_message(
             player_id,
             token,
         } => {
+            if state.user_id.is_some() {
+                return ServerMessage::Error {
+                    code: 1021,
+                    message: "already_authenticated".to_string(),
+                };
+            }
+
             if player_id.trim().is_empty() || token.trim().is_empty() {
                 return ServerMessage::Error {
                     code: 1014,
@@ -601,6 +570,13 @@ async fn handle_message(
         ClientMessage::JoinSession {
             session_id,
         } => {
+            if state.session_id.is_some() {
+                return ServerMessage::Error {
+                    code: 1022,
+                    message: "leave_current_session_first".to_string(),
+                };
+            }
+
             let Some(user_id) =
                 state.user_id.clone()
             else {
