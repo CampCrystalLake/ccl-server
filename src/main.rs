@@ -1,5 +1,7 @@
 use std::env;
 use std::net::SocketAddr;
+use std::str::FromStr;
+use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
@@ -13,7 +15,9 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use sqlx::SqlitePool;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions,
+};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -99,25 +103,25 @@ async fn main() {
     println!("Database: {database_url}");
     println!("========================================");
 
-    let db_path = database_url
-        .strip_prefix("sqlite://")
-        .unwrap_or(&database_url);
+    let sqlite_options = SqliteConnectOptions::from_str(&database_url)
+        .expect("Invalid DATABASE_URL")
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
 
-    if let Some(parent) = std::path::Path::new(db_path).parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!("Failed to create database directory: {error}");
-        }
-    }
-
-    if !std::path::Path::new(db_path).exists() {
-        if let Err(error) = std::fs::File::create(db_path) {
-            eprintln!("Failed to create database: {error}");
-        }
+    if let Some(parent) = sqlite_options
+        .get_filename()
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .expect("Failed to create database directory");
     }
 
     let db = SqlitePoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
+        .connect_with(sqlite_options)
         .await
         .expect("Failed to connect to SQLite database");
 
