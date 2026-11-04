@@ -320,157 +320,8 @@ fn client_message_id(
         ClientMessage::JoinSession { .. } =>
             MSG_JOIN_SESSION,
 
-        ClientMessage::LeaveSession {
-            session_id,
-        } => {
-            let Some(user_id) = state.user_id.clone() else {
-                return ServerMessage::Error {
-                    code: 1002,
-                    message: "authentication_required".to_string(),
-                };
-            };
-
-            let mut tx = match db.begin().await {
-                Ok(tx) => tx,
-                Err(error) => {
-                    eprintln!("Failed to begin TCP leave transaction: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            };
-
-            let host_user_id: Option<String> = match sqlx::query_scalar(
-                "SELECT host_user_id FROM lobbies WHERE lobby_id = ?",
-            )
-            .bind(&session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            {
-                Ok(host_user_id) => host_user_id,
-                Err(error) => {
-                    eprintln!("Failed to load lobby before TCP leave: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            };
-
-            let Some(host_user_id) = host_user_id else {
-                return ServerMessage::Error {
-                    code: 1006,
-                    message: "session_not_found".to_string(),
-                };
-            };
-
-            let removed = match sqlx::query(
-                "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
-            )
-            .bind(&session_id)
-            .bind(&user_id)
-            .execute(&mut *tx)
-            .await
-            {
-                Ok(result) => result.rows_affected() > 0,
-                Err(error) => {
-                    eprintln!("Failed to remove TCP lobby member: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            };
-
-            let remaining: i64 = match sqlx::query_scalar(
-                "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
-            )
-            .bind(&session_id)
-            .fetch_one(&mut *tx)
-            .await
-            {
-                Ok(count) => count,
-                Err(error) => {
-                    eprintln!("Failed to count TCP lobby members: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            };
-
-            if remaining == 0 {
-                if let Err(error) = sqlx::query(
-                    "DELETE FROM lobbies WHERE lobby_id = ?",
-                )
-                .bind(&session_id)
-                .execute(&mut *tx)
-                .await
-                {
-                    eprintln!("Failed to delete empty TCP lobby: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            } else if host_user_id == user_id {
-                let next_host: Option<String> = match sqlx::query_scalar(
-                    r#"
-                    SELECT user_id
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    ORDER BY joined_at ASC, user_id ASC
-                    LIMIT 1
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_optional(&mut *tx)
-                .await
-                {
-                    Ok(next_host) => next_host,
-                    Err(error) => {
-                        eprintln!("Failed to select TCP replacement host: {error}");
-                        return ServerMessage::Error {
-                            code: 1009,
-                            message: "session_leave_failed".to_string(),
-                        };
-                    }
-                };
-
-                if let Some(next_host) = next_host
-                    && let Err(error) = sqlx::query(
-                        "UPDATE lobbies SET host_user_id = ? WHERE lobby_id = ?",
-                    )
-                    .bind(next_host)
-                    .bind(&session_id)
-                    .execute(&mut *tx)
-                    .await
-                {
-                    eprintln!("Failed to transfer TCP lobby host: {error}");
-                    return ServerMessage::Error {
-                        code: 1009,
-                        message: "session_leave_failed".to_string(),
-                    };
-                }
-            }
-
-            if let Err(error) = tx.commit().await {
-                eprintln!("Failed to commit TCP leave transaction: {error}");
-                return ServerMessage::Error {
-                    code: 1009,
-                    message: "session_leave_failed".to_string(),
-                };
-            }
-
-            if state.session_id.as_deref() == Some(session_id.as_str()) {
-                state.session_id = None;
-                state.ready = false;
-                state.started = false;
-            }
-
-            ServerMessage::SessionLeft { session_id }
-        }
+        ClientMessage::LeaveSession { .. } =>
+            MSG_LEAVE_SESSION,
 
         ClientMessage::SetReady { .. } =>
             MSG_SET_READY,
@@ -943,75 +794,151 @@ async fn handle_message(
         ClientMessage::LeaveSession {
             session_id,
         } => {
-            let Some(user_id) =
-                state.user_id.clone()
-            else {
+            let Some(user_id) = state.user_id.clone() else {
                 return ServerMessage::Error {
                     code: 1002,
-                    message:
-                        "authentication_required"
-                            .to_string(),
+                    message: "authentication_required".to_string(),
                 };
             };
 
-            let result = sqlx::query(
-                r#"
-                DELETE FROM lobby_players
-                WHERE lobby_id = ?
-                AND user_id = ?
-                "#,
+            let mut tx = match db.begin().await {
+                Ok(tx) => tx,
+                Err(error) => {
+                    eprintln!("Failed to begin TCP leave transaction: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            };
+
+            let host_user_id: Option<String> = match sqlx::query_scalar(
+                "SELECT host_user_id FROM lobbies WHERE lobby_id = ?",
+            )
+            .bind(&session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            {
+                Ok(host_user_id) => host_user_id,
+                Err(error) => {
+                    eprintln!("Failed to load lobby before TCP leave: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            };
+
+            let Some(host_user_id) = host_user_id else {
+                return ServerMessage::Error {
+                    code: 1006,
+                    message: "session_not_found".to_string(),
+                };
+            };
+
+            let removed = match sqlx::query(
+                "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
             )
             .bind(&session_id)
             .bind(&user_id)
-            .execute(db)
-            .await;
+            .execute(&mut *tx)
+            .await
+            {
+                Ok(result) => result.rows_affected() > 0,
+                Err(error) => {
+                    eprintln!("Failed to remove TCP lobby member: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            };
 
-            if let Err(error) = result {
-                eprintln!(
-                    "Failed to leave session: {error}"
-                );
+            let remaining: i64 = match sqlx::query_scalar(
+                "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+            )
+            .bind(&session_id)
+            .fetch_one(&mut *tx)
+            .await
+            {
+                Ok(count) => count,
+                Err(error) => {
+                    eprintln!("Failed to count TCP lobby members: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            };
 
+            if remaining == 0 {
+                if let Err(error) = sqlx::query("DELETE FROM lobbies WHERE lobby_id = ?")
+                    .bind(&session_id)
+                    .execute(&mut *tx)
+                    .await
+                {
+                    eprintln!("Failed to delete empty TCP lobby: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            } else if host_user_id == user_id {
+                let next_host: Option<String> = match sqlx::query_scalar(
+                    r#"
+                    SELECT user_id
+                    FROM lobby_players
+                    WHERE lobby_id = ?
+                    ORDER BY joined_at ASC, user_id ASC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(&session_id)
+                .fetch_optional(&mut *tx)
+                .await
+                {
+                    Ok(next_host) => next_host,
+                    Err(error) => {
+                        eprintln!("Failed to select TCP replacement host: {error}");
+                        return ServerMessage::Error {
+                            code: 1009,
+                            message: "session_leave_failed".to_string(),
+                        };
+                    }
+                };
+
+                if let Some(next_host) = next_host
+                    && let Err(error) = sqlx::query(
+                        "UPDATE lobbies SET host_user_id = ? WHERE lobby_id = ?",
+                    )
+                    .bind(next_host)
+                    .bind(&session_id)
+                    .execute(&mut *tx)
+                    .await
+                {
+                    eprintln!("Failed to transfer TCP lobby host: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_leave_failed".to_string(),
+                    };
+                }
+            }
+
+            if let Err(error) = tx.commit().await {
+                eprintln!("Failed to commit TCP leave transaction: {error}");
                 return ServerMessage::Error {
                     code: 1009,
-                    message:
-                        "session_leave_failed"
-                            .to_string(),
+                    message: "session_leave_failed".to_string(),
                 };
             }
 
-            if state.session_id.as_deref()
-                == Some(session_id.as_str())
-            {
+            if state.session_id.as_deref() == Some(session_id.as_str()) {
                 state.session_id = None;
                 state.ready = false;
                 state.started = false;
             }
 
-            let remaining: i64 =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*)
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_one(db)
-                .await
-                .unwrap_or(0);
-
-            if remaining == 0 {
-                let _ = sqlx::query(
-                    "DELETE FROM lobbies WHERE lobby_id = ?",
-                )
-                .bind(&session_id)
-                .execute(db)
-                .await;
-            }
-
-            ServerMessage::SessionLeft {
-                session_id,
-            }
+            ServerMessage::SessionLeft { session_id }
         }
 
         ClientMessage::SetReady { ready } => {
