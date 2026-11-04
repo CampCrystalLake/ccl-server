@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090909">
+  <meta name="description" content="KLAY — Friday the 13th community and private server project.">
+  <title>KLAY — Friday the 13th</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="#home" aria-label="KLAY home">
+      <span class="brand-mark">K</span>
+      <span>KLAY<span class="brand-dot">.</span></span>
+    </a>
+    <nav class="nav">
+      <a href="#features">المميزات</a>
+      <a href="#status">حالة المشروع</a>
+      <a href="https://discord.gg/nt6CF6hQAX" target="_blank" rel="noopener noreferrer">Discord</a>
+    </nav>
+    <a class="top-cta" href="#login">دخول اللاعب <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="home">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="pulse"></span> KLAY COMMUNITY PROJECT</p>
+        <h1>الليل <span>ليس</span><br>نهايتك.</h1>
+        <p class="hero-lead">مشروع مجتمعي لعشّاق Friday the 13th. نعمل على بناء تجربة خدمات خاصة وهوية موحّدة للاعبين.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#login">منطقة اللاعبين <span aria-hidden="true">←</span></a>
+          <a class="button button-ghost" href="https://discord.gg/nt6CF6hQAX" target="_blank" rel="noopener noreferrer">انضم إلى Discord</a>
+        </div>
+        <div class="hero-meta">
+          <span><i></i> COMMUNITY BUILT</span>
+          <span>PS4 / PS5 PROJECT</span>
+        </div>
+      </div>
+      <div class="hero-art" aria-label="KLAY dark red abstract emblem">
+        <div class="orbit orbit-one"></div>
+        <div class="orbit orbit-two"></div>
+        <div class="slash slash-one"></div>
+        <div class="slash slash-two"></div>
+        <div class="emblem"><span>K</span></div>
+        <div class="art-caption"><b>13</b><span>THE NIGHT<br>IS NOT OVER</span></div>
+      </div>
+      <div class="hero-index">01 <span>/</span> 03</div>
+    </section>
+
+    <section class="ticker" aria-label="Project statement">
+      <div>KLAY <b>✦</b> FRIDAY THE 13TH <b>✦</b> COMMUNITY <b>✦</b> KLAY <b>✦</b> FRIDAY THE 13TH <b>✦</b> COMMUNITY</div>
+    </section>
+
+    <section class="features section" id="features">
+      <div class="section-heading">
+        <p class="eyebrow">WHAT WE ARE BUILDING</p>
+        <h2>أكثر من مجرد <span>سيرفر.</span></h2>
+        <p>واجهة موحّدة لخدمات المشروع، تتطور على مراحل مع اختبار كل ميزة قبل إطلاقها.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-number">01</span>
+          <div class="feature-icon">⌘</div>
+          <h3>حساب اللاعب</h3>
+          <p>منطقة مخصصة لعرض هوية اللاعب وبيانات حسابه بعد اكتمال ربط تسجيل الدخول.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">02</span>
+          <div class="feature-icon">◉</div>
+          <h3>الجلسات واللوبيات</h3>
+          <p>واجهة للبحث عن الجلسات والغرف ومتابعة حالة خدمات المشروع.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">03</span>
+          <div class="feature-icon">✧</div>
+          <h3>مجتمع KLAY</h3>
+          <p>مكان واحد للأخبار والتحديثات وروابط مجتمع اللاعبين.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="status-section section" id="status">
+      <div class="status-panel">
+        <div>
+          <p class="eyebrow">PROJECT STATUS</p>
+          <h2>نبنيها <span>خطوة بخطوة.</span></h2>
+          <p>هذه الصفحة واجهة تعريفية أولية. تسجيل الدخول وخدمات EOS لن تظهر كخدمات عاملة حتى يكتمل ربط الخادم والتحقق منه.</p>
+        </div>
+        <div class="status-list">
+          <div class="status-row"><span class="status-indicator pending"></span><span>واجهة الموقع</span><b>متاحة</b></div>
+          <div class="status-row"><span class="status-indicator pending"></span><span>تسجيل دخول Epic</span><b>قيد الإعداد</b></div>
+          <div class="status-row"><span class="status-indicator pending"></span><span>EOS Lobbies / Sessions</span><b>قيد الدمج</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="login-section section" id="login">
+      <div class="login-card">
+        <div class="login-mark">K</div>
+        <p class="eyebrow">PLAYER ACCESS</p>
+        <h2>منطقة اللاعبين</h2>
+        <p>تسجيل الدخول عبر Epic سيتم تفعيله بعد إكمال إعداد OAuth وربط Callback آمن في الخادم.</p>
+        <button class="button button-primary login-button" id="epic-login" type="button">تسجيل الدخول عبر Epic <span aria-hidden="true">↗</span></button>
+        <small>لا تدخل بيانات حسابك في أي صفحة غير صفحة Epic الرسمية.</small>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <a class="brand" href="#home"><span class="brand-mark">K</span><span>KLAY<span class="brand-dot">.</span></span></a>
+    <p>مشروع مجتمعي مستقل وغير تابع رسميًا لـ IllFonic أو Gun Media أو Epic Games.</p>
+    <span>© <span id="year"></span> KLAY PROJECT</span>
+  </footer>
+</body>
+</html>
