@@ -995,26 +995,39 @@ async fn create_lobby_handler(
     }))
 }
 async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
-    let lobbies = sqlx::query_as::<_, (String, String, String, i32)>(
+    let lobbies = match sqlx::query_as::<_, (String, String, String, i32, i64)>(
         r#"
-        SELECT lobby_id, name, host_user_id, max_players
+        SELECT lobby_id, name, host_user_id, max_players, started
         FROM lobbies
         ORDER BY created_at DESC
         "#,
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    {
+        Ok(lobbies) => lobbies,
+        Err(error) => {
+            eprintln!("Failed to list lobbies: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(lobbies.len());
 
-    for (lobby_id, name, host_user_id, max_players) in lobbies {
-        let players: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?")
-                .bind(&lobby_id)
-                .fetch_one(&state.db)
-                .await
-                .unwrap_or(0);
+    for (lobby_id, name, host_user_id, max_players, started) in lobbies {
+        let players: i64 = match sqlx::query_scalar(
+            "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+        )
+        .bind(&lobby_id)
+        .fetch_one(&state.db)
+        .await
+        {
+            Ok(players) => players,
+            Err(error) => {
+                eprintln!("Failed to count players in lobby {lobby_id}: {error}");
+                return Json(json!({"success": false, "error": "database_error"}));
+            }
+        };
 
         result.push(json!({
             "lobbyId": lobby_id,
@@ -1022,7 +1035,8 @@ async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
             "hostUserId": host_user_id,
             "maxPlayers": max_players,
             "players": players,
-            "status": if players >= max_players as i64 { "full" } else { "waiting" }
+            "started": started != 0,
+            "status": if started != 0 { "started" } else if players >= max_players as i64 { "full" } else { "waiting" }
         }));
     }
 
@@ -1031,7 +1045,6 @@ async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
         "lobbies": result
     }))
 }
-
 async fn get_lobby_handler(
     State(state): State<AppState>,
     Path(lobby_id): Path<String>,
