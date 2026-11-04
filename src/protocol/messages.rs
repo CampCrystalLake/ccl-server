@@ -7,7 +7,7 @@ use super::types::{Player, Session};
 pub enum ClientMessage {
     Authenticate {
         player_id: String,
-        player_name: String,
+        token: String,
     },
 
     CreateSession,
