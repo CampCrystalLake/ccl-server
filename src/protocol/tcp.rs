@@ -836,7 +836,7 @@ async fn handle_message(
                 };
             };
 
-            let removed = match sqlx::query(
+            let _removed = match sqlx::query(
                 "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
             )
             .bind(&session_id)
