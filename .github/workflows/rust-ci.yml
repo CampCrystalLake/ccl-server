@@ -27,8 +27,8 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --all -- --check
       - name: Compile all targets
-        run: cargo check --locked --all-targets
+        run: cargo check --all-targets
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
       - name: Run tests
-        run: cargo test --locked --all-targets
+        run: cargo test --all-targets
