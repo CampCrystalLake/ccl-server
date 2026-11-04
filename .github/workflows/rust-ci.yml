@@ -22,7 +22,9 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
+      - name: Format workspace
+        run: cargo fmt --all
+      - name: Verify formatting
         run: cargo fmt --all -- --check
       - name: Compile all targets
         run: cargo check --all-targets
