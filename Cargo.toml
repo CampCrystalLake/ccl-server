@@ -22,3 +22,8 @@ thiserror = "2"
 [[bin]]
 name = "ccl-server"
 path = "src/main.rs"
+# Stable WiX identifiers must remain unchanged across releases so Windows
+# can recognize upgrades and reliably remove the installed PATH component.
+[package.metadata.wix]
+upgrade-guid = "1401E903-2986-45D1-995E-4697D286D40C"
+path-guid = "27F223E9-C5BE-4572-B2F0-CE6A76F2A446"
