@@ -5,7 +5,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::Path;
 use axum::extract::State;
-use axum::http::HeaderValue;
+use axum::http::{HeaderValue, StatusCode};
 use axum::routing::get;
 use axum::routing::post;
 use serde::Deserialize;
@@ -19,9 +19,6 @@ use uuid::Uuid;
 
 mod protocol;
 
-use protocol::ClientMessage;
-use protocol::Packet;
-use protocol::ServerMessage;
 
 const SERVER_VERSION: &str = "0.5.0";
 const DEFAULT_MAX_PLAYERS: i32 = 8;
@@ -275,9 +272,9 @@ async fn main() {
     let app = Router::new()
         .route("/", get(home_handler))
         .route("/health", get(health_handler))
-        .route("/api/v1/protocol", post(protocol_handler))
+        .route("/api/v1/protocol", post(protocol_unavailable_handler))
         .route("/api/v1/login", post(login_handler))
-        .route("/api/v1/auth/psn", post(login_handler))
+        .route("/api/v1/auth/psn", post(psn_auth_unavailable_handler))
         .route("/api/v1/session/heartbeat", post(heartbeat_handler))
         .route("/api/v1/session/validate", post(validate_session_handler))
         .route("/api/v1/profiles/me", get(profile_handler))
@@ -330,57 +327,26 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn protocol_handler(
-    Json(packet): Json<Packet<ClientMessage>>,
-) -> Json<Packet<ServerMessage>> {
-    let response = match packet.payload {
-        ClientMessage::Authenticate {
-            player_id,
-            player_name,
-        } => ServerMessage::Authenticated {
-            player: protocol::types::Player {
-                id: player_id,
-                name: player_name,
-                ready: false,
-            },
-        },
+async fn protocol_unavailable_handler() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "success": false,
+            "error": "original_game_protocol_not_implemented",
+            "message": "This HTTP endpoint is not a substitute for the original game's protocol."
+        })),
+    )
+}
 
-        ClientMessage::CreateSession => ServerMessage::SessionCreated {
-            session: protocol::types::Session {
-                id: Uuid::new_v4().to_string(),
-                players: Vec::new(),
-                started: false,
-            },
-        },
-
-        ClientMessage::JoinSession { session_id } => ServerMessage::SessionJoined {
-            session: protocol::types::Session {
-                id: session_id,
-                players: Vec::new(),
-                started: false,
-            },
-        },
-
-        ClientMessage::LeaveSession { session_id } => ServerMessage::SessionLeft { session_id },
-
-        ClientMessage::SetReady { ready } => ServerMessage::ReadyChanged {
-            player_id: "http-client".to_string(),
-            ready,
-        },
-
-        ClientMessage::StartSession => ServerMessage::SessionStarted {
-            session_id: "http-session".to_string(),
-        },
-
-        ClientMessage::Heartbeat => ServerMessage::Pong,
-    };
-
-    Json(Packet {
-        version: packet.version,
-        message_id: 0,
-        request_id: packet.request_id,
-        payload: response,
-    })
+async fn psn_auth_unavailable_handler() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "success": false,
+            "error": "psn_authentication_not_implemented",
+            "message": "Use /api/v1/login only for a KLAY test account. This service does not authenticate PlayStation Network accounts."
+        })),
+    )
 }
 
 async fn login_handler(
@@ -389,7 +355,17 @@ async fn login_handler(
 ) -> Json<Value> {
     let display_name = request
         .display_name
-        .unwrap_or_else(|| "KLAY_Player".to_string());
+        .unwrap_or_else(|| "KLAY_Player".to_string())
+        .trim()
+        .to_string();
+
+    if display_name.is_empty() || display_name.chars().count() > 32 {
+        return Json(json!({
+            "success": false,
+            "status": "invalid_display_name",
+            "message": "Display name must contain between 1 and 32 characters."
+        }));
+    }
 
     let user_id = Uuid::new_v4().to_string();
     let token = Uuid::new_v4().to_string();
