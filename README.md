@@ -35,6 +35,7 @@ These features operate within this custom protocol; they do not establish compat
 - `DATABASE_URL` (SQLite URL; use a persistent mounted volume)
 - `TCP_HOST` (default `0.0.0.0`)
 - `TCP_PORT` (default `9000`)
+- TCP listener accepts up to 128 simultaneous client connections; excess connections are closed.
 - `PUBLIC_URL` (public HTTPS URL)
 
 Do not use an ephemeral filesystem path for the production SQLite database. Configure a persistent volume and point `DATABASE_URL` at its mounted path. Back up the database before deployments or migrations.
