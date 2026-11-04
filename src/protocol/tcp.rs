@@ -228,23 +228,7 @@ async fn handle_client(
 
         frame.extend_from_slice(&payload);
 
-        let raw_payload =
-            String::from_utf8_lossy(&payload);
-
-        println!(
-            "TCP packet received: message_id={}, request_id={}, payload={}",
-            u16::from_be_bytes([
-                header[5],
-                header[6],
-            ]),
-            u32::from_be_bytes([
-                header[7],
-                header[8],
-                header[9],
-                header[10],
-            ]),
-            raw_payload
-        );
+        // Never log client payloads: authentication frames contain bearer tokens.
 
         let decoded =
             decode_frame::<ClientMessage>(&frame);
@@ -413,103 +397,77 @@ async fn handle_message(
     match message {
         ClientMessage::Authenticate {
             player_id,
-            player_name,
+            token,
         } => {
-            if player_id.trim().is_empty()
-                || player_name.trim().is_empty()
-            {
+            if player_id.trim().is_empty() || token.trim().is_empty() {
                 return ServerMessage::Error {
                     code: 1014,
-                    message:
-                        "invalid_player_identity"
-                            .to_string(),
+                    message: "invalid_credentials".to_string(),
                 };
             }
 
-            let token =
-                uuid::Uuid::new_v4().to_string();
-
-            let result = sqlx::query(
-                r#"
-                INSERT INTO sessions (
-                    user_id,
-                    display_name,
-                    token
-                )
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id)
-                DO UPDATE SET
-                    display_name =
-                        excluded.display_name,
-                    token =
-                        excluded.token,
-                    last_seen =
-                        CURRENT_TIMESTAMP
-                "#,
+            // The token must have been issued by POST /api/v1/login.
+            // The client cannot choose or overwrite another user's identity.
+            let identity = sqlx::query_as::<_, (String, String)>(
+                "SELECT user_id, display_name FROM sessions WHERE token = ?",
             )
-            .bind(&player_id)
-            .bind(&player_name)
-            .bind(&token)
-            .execute(db)
+            .bind(token.trim())
+            .fetch_optional(db)
             .await;
 
-            match result {
-                Ok(_) => {
-                    state.user_id =
-                        Some(player_id.clone());
-
-                    state.display_name =
-                        Some(player_name.clone());
-
+            match identity {
+                Ok(Some((stored_id, stored_name))) if stored_id == player_id => {
+                    state.user_id = Some(stored_id.clone());
+                    state.display_name = Some(stored_name.clone());
                     state.ready = false;
                     state.started = false;
 
-                    println!(
-                        "TCP player authenticated: user_id={}, name={}, token={}",
-                        player_id,
-                        player_name,
-                        token
-                    );
-
                     ServerMessage::Authenticated {
                         player: Player {
-                            id: player_id,
-                            name: player_name,
+                            id: stored_id,
+                            name: stored_name,
                             ready: false,
                         },
                     }
                 }
-
+                Ok(Some(_)) => ServerMessage::Error {
+                    code: 1019,
+                    message: "identity_token_mismatch".to_string(),
+                },
+                Ok(None) => ServerMessage::Error {
+                    code: 1020,
+                    message: "invalid_session_token".to_string(),
+                },
                 Err(error) => {
-                    eprintln!(
-                        "TCP authentication database error: {error}"
-                    );
-
+                    eprintln!("TCP authentication lookup failed: {error}");
                     ServerMessage::Error {
                         code: 1001,
-                        message:
-                            "authentication_failed"
-                                .to_string(),
+                        message: "authentication_failed".to_string(),
                     }
                 }
             }
         }
 
         ClientMessage::Heartbeat => {
-            if let Some(user_id) =
-                state.user_id.as_ref()
+            let Some(user_id) = state.user_id.as_ref() else {
+                return ServerMessage::Error {
+                    code: 1002,
+                    message: "authentication_required".to_string(),
+                };
+            };
+
+            if let Err(error) = sqlx::query(
+                "UPDATE sessions SET last_seen = CURRENT_TIMESTAMP WHERE user_id = ?",
+            )
+            .bind(user_id)
+            .execute(db)
+            .await
             {
-                let _ = sqlx::query(
-                    r#"
-                    UPDATE sessions
-                    SET last_seen =
-                        CURRENT_TIMESTAMP
-                    WHERE user_id = ?
-                    "#,
-                )
-                .bind(user_id)
-                .execute(db)
-                .await;
+                eprintln!("TCP heartbeat update failed: {error}");
+                return ServerMessage::Error {
+                    code: 1001,
+                    message: "heartbeat_failed".to_string(),
+                };
             }
 
             ServerMessage::Pong
