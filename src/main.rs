@@ -285,6 +285,19 @@ async fn main() {
     .await
     .expect("Failed to create offline_match_starts table");
 
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_lobby_players_lobby_joined ON lobby_players(lobby_id, joined_at, user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lobby_players_user ON lobby_players(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lobbies_created_at ON lobbies(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_offline_matches_user_mode ON offline_matches(user_id, mode)",
+        "CREATE INDEX IF NOT EXISTS idx_klay_achievements_user_unlocked ON klay_achievements(user_id, unlocked_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(&db)
+            .await
+            .expect("Failed to create database index");
+    }
+
     println!("Database connected");
     println!("Sessions table ready");
     println!("Lobbies table ready");
@@ -997,11 +1010,19 @@ async fn create_lobby_handler(
     }))
 }
 async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
-    let lobbies = match sqlx::query_as::<_, (String, String, String, i32, i64)>(
+    let lobbies = match sqlx::query_as::<_, (String, String, String, i32, i64, i64)>(
         r#"
-        SELECT lobby_id, name, host_user_id, max_players, started
-        FROM lobbies
-        ORDER BY created_at DESC
+        SELECT
+            l.lobby_id,
+            l.name,
+            l.host_user_id,
+            l.max_players,
+            l.started,
+            COUNT(lp.user_id) AS player_count
+        FROM lobbies l
+        LEFT JOIN lobby_players lp ON lp.lobby_id = l.lobby_id
+        GROUP BY l.lobby_id, l.name, l.host_user_id, l.max_players, l.started, l.created_at
+        ORDER BY l.created_at DESC
         "#,
     )
     .fetch_all(&state.db)
@@ -1014,33 +1035,20 @@ async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
         }
     };
 
-    let mut result = Vec::with_capacity(lobbies.len());
-
-    for (lobby_id, name, host_user_id, max_players, started) in lobbies {
-        let players: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
-        )
-        .bind(&lobby_id)
-        .fetch_one(&state.db)
-        .await
-        {
-            Ok(players) => players,
-            Err(error) => {
-                eprintln!("Failed to count players in lobby {lobby_id}: {error}");
-                return Json(json!({"success": false, "error": "database_error"}));
-            }
-        };
-
-        result.push(json!({
-            "lobbyId": lobby_id,
-            "name": name,
-            "hostUserId": host_user_id,
-            "maxPlayers": max_players,
-            "players": players,
-            "started": started != 0,
-            "status": if started != 0 { "started" } else if players >= max_players as i64 { "full" } else { "waiting" }
-        }));
-    }
+    let result: Vec<Value> = lobbies
+        .into_iter()
+        .map(|(lobby_id, name, host_user_id, max_players, started, players)| {
+            json!({
+                "lobbyId": lobby_id,
+                "name": name,
+                "hostUserId": host_user_id,
+                "maxPlayers": max_players,
+                "players": players,
+                "started": started != 0,
+                "status": if started != 0 { "started" } else if players >= max_players as i64 { "full" } else { "waiting" }
+            })
+        })
+        .collect();
 
     Json(json!({
         "success": true,
