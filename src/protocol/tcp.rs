@@ -373,7 +373,7 @@ async fn cleanup_connection(
                     .bind(session_id)
                     .execute(&mut *tx)
                     .await?;
-            } else if host_user_id == *user_id {
+            } else if host_user_id == user_id.as_str() {
                 let next_host: Option<String> = sqlx::query_scalar(
                     r#"
                     SELECT user_id
