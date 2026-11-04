@@ -1,7 +1,8 @@
 [package]
 name = "ccl-server"
-version = "0.3.0"
-edition = "2021"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
 license = "MIT"
 description = "Friday the 13th private server backend"
 repository = "https://github.com/khaled934533-source/f13-custom-backend"
