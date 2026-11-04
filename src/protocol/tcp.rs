@@ -502,43 +502,37 @@ async fn handle_message(
         }
 
         ClientMessage::CreateSession => {
-            let Some(user_id) =
-                state.user_id.clone()
-            else {
+            let Some(user_id) = state.user_id.clone() else {
                 return ServerMessage::Error {
                     code: 1002,
-                    message:
-                        "authentication_required"
-                            .to_string(),
+                    message: "authentication_required".to_string(),
                 };
             };
 
             if state.session_id.is_some() {
                 return ServerMessage::Error {
                     code: 1015,
-                    message:
-                        "already_in_session"
-                            .to_string(),
+                    message: "already_in_session".to_string(),
                 };
             }
 
-            let session_id =
-                uuid::Uuid::new_v4().to_string();
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let lobby_name = format!("KLAY Lobby {}", &session_id[..8]);
 
-            let lobby_name =
-                format!(
-                    "KLAY Lobby {}",
-                    &session_id[..8]
-                );
+            let mut tx = match db.begin().await {
+                Ok(tx) => tx,
+                Err(error) => {
+                    eprintln!("Failed to begin TCP session creation: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_create_failed".to_string(),
+                    };
+                }
+            };
 
-            let result = sqlx::query(
+            if let Err(error) = sqlx::query(
                 r#"
-                INSERT INTO lobbies (
-                    lobby_id,
-                    name,
-                    host_user_id,
-                    max_players
-                )
+                INSERT INTO lobbies (lobby_id, name, host_user_id, max_players)
                 VALUES (?, ?, ?, ?)
                 "#,
             )
@@ -546,81 +540,51 @@ async fn handle_message(
             .bind(&lobby_name)
             .bind(&user_id)
             .bind(8i32)
-            .execute(db)
-            .await;
-
-            if let Err(error) = result {
-                eprintln!(
-                    "Failed to create session: {error}"
-                );
-
+            .execute(&mut *tx)
+            .await
+            {
+                eprintln!("Failed to create TCP lobby: {error}");
                 return ServerMessage::Error {
                     code: 1003,
-                    message:
-                        "session_create_failed"
-                            .to_string(),
+                    message: "session_create_failed".to_string(),
                 };
             }
 
-            let result = sqlx::query(
-                r#"
-                INSERT INTO lobby_players (
-                    lobby_id,
-                    user_id,
-                    ready
-                )
-                VALUES (?, ?, 0)
-                "#,
+            if let Err(error) = sqlx::query(
+                "INSERT INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
             )
             .bind(&session_id)
             .bind(&user_id)
-            .execute(db)
-            .await;
-
-            if let Err(error) = result {
-                eprintln!(
-                    "Failed to add session host: {error}"
-                );
-
-                let _ = sqlx::query(
-                    "DELETE FROM lobbies WHERE lobby_id = ?",
-                )
-                .bind(&session_id)
-                .execute(db)
-                .await;
-
+            .execute(&mut *tx)
+            .await
+            {
+                eprintln!("Failed to add TCP lobby host: {error}");
                 return ServerMessage::Error {
                     code: 1004,
-                    message:
-                        "session_host_join_failed"
-                            .to_string(),
+                    message: "session_host_join_failed".to_string(),
                 };
             }
 
-            state.session_id =
-                Some(session_id.clone());
+            if let Err(error) = tx.commit().await {
+                eprintln!("Failed to commit TCP lobby creation: {error}");
+                return ServerMessage::Error {
+                    code: 1009,
+                    message: "session_create_failed".to_string(),
+                };
+            }
 
-            state.ready = false;
-            state.started = false;
-
-            match load_session(
-                db,
-                &session_id,
-            )
-            .await
-            {
+            match load_session(db, &session_id).await {
                 Ok(session) => {
-                    ServerMessage::SessionCreated {
-                        session,
-                    }
+                    state.session_id = Some(session_id);
+                    state.ready = false;
+                    state.started = session.started;
+                    ServerMessage::SessionCreated { session }
                 }
-
-                Err(_) => {
+                Err(error) => {
+                    eprintln!("Failed to load newly created TCP lobby: {error}");
                     ServerMessage::Error {
                         code: 1005,
-                        message:
-                            "session_load_failed"
-                                .to_string(),
+                        message: "session_load_failed".to_string(),
                     }
                 }
             }
