@@ -1215,63 +1215,171 @@ async fn leave_lobby_handler(
     Path(lobby_id): Path<String>,
     Json(request): Json<LobbyJoinRequest>,
 ) -> Json<Value> {
-    let user_id: Option<String> =
-        sqlx::query_scalar("SELECT user_id FROM sessions WHERE token = ?")
-            .bind(&request.token)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
+    let user_id: String = match sqlx::query_scalar(
+        "SELECT user_id FROM sessions WHERE token = ?",
+    )
+    .bind(request.token.trim())
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => {
+            return Json(json!({
+                "success": false,
+                "error": "invalid_session"
+            }));
+        }
+        Err(error) => {
+            eprintln!("Failed to validate lobby leave session: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "database_error"
+            }));
+        }
+    };
 
-    let Some(user_id) = user_id else {
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            eprintln!("Failed to begin lobby leave transaction: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "database_error"
+            }));
+        }
+    };
+
+    let host_user_id: Option<String> = match sqlx::query_scalar(
+        "SELECT host_user_id FROM lobbies WHERE lobby_id = ?",
+    )
+    .bind(&lobby_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(host_user_id) => host_user_id,
+        Err(error) => {
+            eprintln!("Failed to load lobby before leave: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "database_error"
+            }));
+        }
+    };
+
+    let Some(host_user_id) = host_user_id else {
         return Json(json!({
             "success": false,
-            "error": "invalid_session"
+            "error": "lobby_not_found"
         }));
     };
 
-    let result = sqlx::query(
-        r#"
-        DELETE FROM lobby_players
-        WHERE lobby_id = ? AND user_id = ?
-        "#,
+    let removed = match sqlx::query(
+        "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
     )
     .bind(&lobby_id)
     .bind(&user_id)
-    .execute(&state.db)
-    .await;
-
-    match result {
-        Ok(result) => {
-            let remaining: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?")
-                    .bind(&lobby_id)
-                    .fetch_one(&state.db)
-                    .await
-                    .unwrap_or(0);
-
-            if remaining == 0 {
-                let _ = sqlx::query("DELETE FROM lobbies WHERE lobby_id = ?")
-                    .bind(&lobby_id)
-                    .execute(&state.db)
-                    .await;
-            }
-
-            Json(json!({
-                "success": true,
-                "removed": result.rows_affected() > 0,
-                "lobbyId": lobby_id,
-                "players": remaining
-            }))
-        }
-
+    .execute(&mut *tx)
+    .await
+    {
+        Ok(result) => result.rows_affected() > 0,
         Err(error) => {
-            eprintln!("Failed to leave lobby: {error}");
-            Json(json!({
+            eprintln!("Failed to remove lobby member: {error}");
+            return Json(json!({
                 "success": false,
                 "error": "leave_failed"
-            }))
+            }));
         }
+    };
+
+    let remaining: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+    )
+    .bind(&lobby_id)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            eprintln!("Failed to count remaining lobby members: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "database_error"
+            }));
+        }
+    };
+
+    let new_host = if remaining == 0 {
+        if let Err(error) = sqlx::query("DELETE FROM lobbies WHERE lobby_id = ?")
+            .bind(&lobby_id)
+            .execute(&mut *tx)
+            .await
+        {
+            eprintln!("Failed to delete empty lobby: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "lobby_cleanup_failed"
+            }));
+        }
+        None
+    } else if host_user_id == user_id {
+        let next_host: Option<String> = match sqlx::query_scalar(
+            r#"
+            SELECT user_id
+            FROM lobby_players
+            WHERE lobby_id = ?
+            ORDER BY joined_at ASC, user_id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(&lobby_id)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(next_host) => next_host,
+            Err(error) => {
+                eprintln!("Failed to select replacement lobby host: {error}");
+                return Json(json!({
+                    "success": false,
+                    "error": "host_transfer_failed"
+                }));
+            }
+        };
+
+        if let Some(next_host) = next_host.as_deref()
+            && let Err(error) = sqlx::query(
+                "UPDATE lobbies SET host_user_id = ? WHERE lobby_id = ?",
+            )
+            .bind(next_host)
+            .bind(&lobby_id)
+            .execute(&mut *tx)
+            .await
+        {
+            eprintln!("Failed to transfer lobby host: {error}");
+            return Json(json!({
+                "success": false,
+                "error": "host_transfer_failed"
+            }));
+        }
+        next_host
+    } else {
+        Some(host_user_id)
+    };
+
+    if let Err(error) = tx.commit().await {
+        eprintln!("Failed to commit lobby leave transaction: {error}");
+        return Json(json!({
+            "success": false,
+            "error": "leave_commit_failed"
+        }));
     }
+
+    Json(json!({
+        "success": true,
+        "removed": removed,
+        "lobbyId": lobby_id,
+        "players": remaining,
+        "hostUserId": new_host
+    }))
 }
 
 async fn db_check_handler(State(state): State<AppState>) -> Json<Value> {
