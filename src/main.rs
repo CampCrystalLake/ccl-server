@@ -465,27 +465,30 @@ async fn heartbeat_handler(
     State(state): State<AppState>,
     Json(request): Json<AuthRequest>,
 ) -> Json<Value> {
-    let result = sqlx::query(
-        r#"
-        UPDATE sessions
-        SET last_seen = CURRENT_TIMESTAMP
-        WHERE token = ?
-        "#,
-    )
-    .bind(&request.token)
-    .execute(&state.db)
-    .await;
+    let token = request.token.trim();
+    if token.is_empty() {
+        return Json(json!({"success": false, "error": "missing_token"}));
+    }
 
-    match result {
+    match sqlx::query(
+        "UPDATE sessions SET last_seen = CURRENT_TIMESTAMP WHERE token = ?",
+    )
+    .bind(token)
+    .execute(&state.db)
+    .await
+    {
         Ok(result) if result.rows_affected() > 0 => Json(json!({
             "success": true,
             "status": "active"
         })),
-
-        _ => Json(json!({
+        Ok(_) => Json(json!({
             "success": false,
-            "status": "invalid_session"
+            "error": "invalid_session"
         })),
+        Err(error) => {
+            eprintln!("HTTP heartbeat update failed: {error}");
+            Json(json!({"success": false, "error": "database_error"}))
+        }
     }
 }
 
@@ -512,10 +515,17 @@ async fn validate_session_handler(
             "displayName": display_name
         })),
 
-        _ => Json(json!({
+        Ok(None) => Json(json!({
             "success": true,
             "valid": false
         })),
+        Err(error) => {
+            eprintln!("Session validation query failed: {error}");
+            Json(json!({
+                "success": false,
+                "error": "database_error"
+            }))
+        },
     }
 }
 
