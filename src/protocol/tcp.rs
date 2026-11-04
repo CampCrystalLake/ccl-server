@@ -338,77 +338,71 @@ async fn cleanup_connection(
     if let (Some(user_id), Some(session_id)) =
         (state.user_id.as_ref(), state.session_id.as_ref())
     {
-        match sqlx::query(
-            "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
-        )
-        .bind(session_id)
-        .bind(user_id)
-        .execute(db)
-        .await
-        {
-            Ok(result) if result.rows_affected() > 0 => {
-                let remaining = sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+        let cleanup = async {
+            let mut tx = db.begin().await?;
+
+            let host_user_id: Option<String> = sqlx::query_scalar(
+                "SELECT host_user_id FROM lobbies WHERE lobby_id = ?",
+            )
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            let Some(host_user_id) = host_user_id else {
+                tx.commit().await?;
+                return Ok::<(), sqlx::Error>(());
+            };
+
+            sqlx::query(
+                "DELETE FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
+            )
+            .bind(session_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+            let remaining: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+            )
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            if remaining == 0 {
+                sqlx::query("DELETE FROM lobbies WHERE lobby_id = ?")
+                    .bind(session_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else if host_user_id == *user_id {
+                let next_host: Option<String> = sqlx::query_scalar(
+                    r#"
+                    SELECT user_id
+                    FROM lobby_players
+                    WHERE lobby_id = ?
+                    ORDER BY joined_at ASC, user_id ASC
+                    LIMIT 1
+                    "#,
                 )
                 .bind(session_id)
-                .fetch_one(db)
-                .await;
+                .fetch_optional(&mut *tx)
+                .await?;
 
-                match remaining {
-                    Ok(0) => {
-                        if let Err(error) = sqlx::query(
-                            "DELETE FROM lobbies WHERE lobby_id = ?",
-                        )
+                if let Some(next_host) = next_host {
+                    sqlx::query("UPDATE lobbies SET host_user_id = ? WHERE lobby_id = ?")
+                        .bind(next_host)
                         .bind(session_id)
-                        .execute(db)
-                        .await
-                        {
-                            eprintln!("TCP cleanup failed to delete empty lobby: {error}");
-                        }
-                    }
-                    Ok(_) => {
-                        let next_host = sqlx::query_scalar::<_, String>(
-                            r#"
-                            SELECT user_id
-                            FROM lobby_players
-                            WHERE lobby_id = ?
-                            ORDER BY joined_at ASC, user_id ASC
-                            LIMIT 1
-                            "#,
-                        )
-                        .bind(session_id)
-                        .fetch_optional(db)
-                        .await;
-
-                        match next_host {
-                            Ok(Some(next_host)) => {
-                                if let Err(error) = sqlx::query(
-                                    "UPDATE lobbies SET host_user_id = ? WHERE lobby_id = ? AND host_user_id = ?",
-                                )
-                                .bind(next_host)
-                                .bind(session_id)
-                                .bind(user_id)
-                                .execute(db)
-                                .await
-                                {
-                                    eprintln!("TCP cleanup failed to transfer lobby host: {error}");
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                eprintln!("TCP cleanup failed to select next lobby host: {error}");
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("TCP cleanup failed to count lobby members: {error}");
-                    }
+                        .execute(&mut *tx)
+                        .await?;
                 }
             }
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!("TCP cleanup failed to remove disconnected player: {error}");
-            }
+
+            tx.commit().await?;
+            Ok::<(), sqlx::Error>(())
+        }
+        .await;
+
+        if let Err(error) = cleanup {
+            eprintln!("TCP disconnect cleanup failed: {error}");
         }
     }
 
