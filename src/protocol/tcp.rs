@@ -118,6 +118,7 @@ async fn handle_client(
         }
 
         if &header[0..4] != b"KLAY" {
+            eprintln!("TCP invalid magic: {:?}", &header[0..4]);
             cleanup_connection(&db, &mut state).await;
             return Err(
                 io::Error::new(
