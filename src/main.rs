@@ -1042,7 +1042,7 @@ async fn get_lobby_handler(
     State(state): State<AppState>,
     Path(lobby_id): Path<String>,
 ) -> Json<Value> {
-    let lobby = sqlx::query_as::<_, (String, String, String, i32, i64)>(
+    let lobby = match sqlx::query_as::<_, (String, String, String, i32, i64)>(
         r#"
         SELECT lobby_id, name, host_user_id, max_players, started
         FROM lobbies
@@ -1051,28 +1051,36 @@ async fn get_lobby_handler(
     )
     .bind(&lobby_id)
     .fetch_optional(&state.db)
-    .await;
-
-    let Some((lobby_id, name, host_user_id, max_players, started)) = lobby.ok().flatten() else {
-        return Json(json!({
-            "success": false,
-            "error": "lobby_not_found"
-        }));
+    .await
+    {
+        Ok(Some(lobby)) => lobby,
+        Ok(None) => return Json(json!({"success": false, "error": "lobby_not_found"})),
+        Err(error) => {
+            eprintln!("Failed to load lobby details: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
     };
 
-    let players = sqlx::query_as::<_, (String, String, String, i64)>(
+    let (lobby_id, name, host_user_id, max_players, started) = lobby;
+    let players = match sqlx::query_as::<_, (String, String, String, i64)>(
         r#"
         SELECT s.user_id, s.display_name, lp.joined_at, lp.ready
         FROM lobby_players lp
         INNER JOIN sessions s ON s.user_id = lp.user_id
         WHERE lp.lobby_id = ?
-        ORDER BY lp.joined_at ASC
+        ORDER BY lp.joined_at ASC, lp.user_id ASC
         "#,
     )
     .bind(&lobby_id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    {
+        Ok(players) => players,
+        Err(error) => {
+            eprintln!("Failed to load lobby members: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
     let player_list: Vec<Value> = players
         .iter()
@@ -1087,7 +1095,6 @@ async fn get_lobby_handler(
         .collect();
 
     let player_count = player_list.len() as i64;
-
     Json(json!({
         "success": true,
         "lobby": {
@@ -1102,7 +1109,6 @@ async fn get_lobby_handler(
         }
     }))
 }
-
 async fn join_lobby_handler(
     State(state): State<AppState>,
     Path(lobby_id): Path<String>,
