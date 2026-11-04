@@ -704,26 +704,14 @@ async fn record_offline_match_handler(
     let match_id = request.match_id.trim();
 
     if token.is_empty() || match_id.is_empty() {
-        return Json(json!({
-            "success": false,
-            "error": "missing_token_or_match_id"
-        }));
+        return Json(json!({"success": false, "error": "missing_token_or_match_id"}));
     }
-
     if match_id.len() > 128 {
-        return Json(json!({
-            "success": false,
-            "error": "match_id_too_long"
-        }));
+        return Json(json!({"success": false, "error": "match_id_too_long"}));
     }
-
     if !request.completed {
-        return Json(json!({
-            "success": false,
-            "error": "match_not_completed"
-        }));
+        return Json(json!({"success": false, "error": "match_not_completed"}));
     }
-
     if request.mode != "counselor" && request.mode != "jason" {
         return Json(json!({
             "success": false,
@@ -732,40 +720,42 @@ async fn record_offline_match_handler(
         }));
     }
 
-    let user_id: Option<String> =
-        sqlx::query_scalar("SELECT user_id FROM sessions WHERE token = ?")
-            .bind(token)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
-
-    let Some(user_id) = user_id else {
-        return Json(json!({
-            "success": false,
-            "error": "invalid_session"
-        }));
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            eprintln!("Failed to begin offline match transaction: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
     };
 
-    let inserted = sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO offline_matches (user_id, match_id, mode)
-        VALUES (?, ?, ?)
-        "#,
+    let user_id: String = match sqlx::query_scalar(
+        "SELECT user_id FROM sessions WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => return Json(json!({"success": false, "error": "invalid_session"})),
+        Err(error) => {
+            eprintln!("Failed to validate offline match session: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
+
+    let inserted = match sqlx::query(
+        "INSERT OR IGNORE INTO offline_matches (user_id, match_id, mode) VALUES (?, ?, ?)",
     )
     .bind(&user_id)
     .bind(match_id)
     .bind(&request.mode)
-    .execute(&state.db)
-    .await;
-
-    let inserted = match inserted {
+    .execute(&mut *tx)
+    .await
+    {
         Ok(result) => result.rows_affected() > 0,
         Err(error) => {
             eprintln!("Failed to record offline match: {error}");
-            return Json(json!({
-                "success": false,
-                "error": "database_error"
-            }));
+            return Json(json!({"success": false, "error": "database_error"}));
         }
     };
 
@@ -777,38 +767,41 @@ async fn record_offline_match_handler(
 
     if inserted
         && let Err(error) = sqlx::query(
-            r#"
-            INSERT OR IGNORE INTO klay_achievements (user_id, achievement_id)
-            VALUES (?, ?)
-            "#,
+            "INSERT OR IGNORE INTO klay_achievements (user_id, achievement_id) VALUES (?, ?)",
         )
         .bind(&user_id)
         .bind(achievement_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
     {
         eprintln!("Failed to record KLAY achievement: {error}");
-        return Json(json!({
-            "success": false,
-            "error": "achievement_save_failed"
-        }));
+        return Json(json!({"success": false, "error": "achievement_save_failed"}));
     }
 
-    let counselor_matches: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM offline_matches WHERE user_id = ? AND mode = 'counselor'",
+    let (counselor_matches, jason_matches): (i64, i64) = match sqlx::query_as(
+        r#"
+        SELECT
+            COALESCE(SUM(CASE WHEN mode = 'counselor' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN mode = 'jason' THEN 1 ELSE 0 END), 0)
+        FROM offline_matches
+        WHERE user_id = ?
+        "#,
     )
     .bind(&user_id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
-    .unwrap_or(0);
+    {
+        Ok(counts) => counts,
+        Err(error) => {
+            eprintln!("Failed to load offline match progress: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
-    let jason_matches: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM offline_matches WHERE user_id = ? AND mode = 'jason'",
-    )
-    .bind(&user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    if let Err(error) = tx.commit().await {
+        eprintln!("Failed to commit offline match: {error}");
+        return Json(json!({"success": false, "error": "database_error"}));
+    }
 
     Json(json!({
         "success": true,
@@ -825,71 +818,72 @@ async fn record_offline_match_handler(
         "note": "Backend tracking only; not official PSN trophies"
     }))
 }
-
 async fn trophy_progress_handler(
     State(state): State<AppState>,
     Json(request): Json<AuthRequest>,
 ) -> Json<Value> {
     let token = request.token.trim();
-
     if token.is_empty() {
-        return Json(json!({
-            "success": false,
-            "error": "missing_token"
-        }));
+        return Json(json!({"success": false, "error": "missing_token"}));
     }
 
-    let user_id: Option<String> =
-        sqlx::query_scalar("SELECT user_id FROM sessions WHERE token = ?")
-            .bind(token)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
-
-    let Some(user_id) = user_id else {
-        return Json(json!({
-            "success": false,
-            "error": "invalid_session"
-        }));
+    let user_id: String = match sqlx::query_scalar(
+        "SELECT user_id FROM sessions WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => return Json(json!({"success": false, "error": "invalid_session"})),
+        Err(error) => {
+            eprintln!("Failed to validate trophy progress session: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
     };
 
-    let counselor_matches: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM offline_matches WHERE user_id = ? AND mode = 'counselor'",
+    let (counselor_matches, jason_matches): (i64, i64) = match sqlx::query_as(
+        r#"
+        SELECT
+            COALESCE(SUM(CASE WHEN mode = 'counselor' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN mode = 'jason' THEN 1 ELSE 0 END), 0)
+        FROM offline_matches
+        WHERE user_id = ?
+        "#,
     )
     .bind(&user_id)
     .fetch_one(&state.db)
     .await
-    .unwrap_or(0);
+    {
+        Ok(counts) => counts,
+        Err(error) => {
+            eprintln!("Failed to load trophy match progress: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
-    let jason_matches: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM offline_matches WHERE user_id = ? AND mode = 'jason'",
-    )
-    .bind(&user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-
-    let achievements: Vec<(String, String)> = sqlx::query_as(
+    let achievements: Vec<(String, String)> = match sqlx::query_as(
         r#"
         SELECT achievement_id, unlocked_at
         FROM klay_achievements
         WHERE user_id = ?
-        ORDER BY unlocked_at ASC
+        ORDER BY unlocked_at ASC, achievement_id ASC
         "#,
     )
     .bind(&user_id)
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    {
+        Ok(achievements) => achievements,
+        Err(error) => {
+            eprintln!("Failed to load KLAY achievements: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
     let achievement_list: Vec<Value> = achievements
         .into_iter()
-        .map(|(id, unlocked_at)| {
-            json!({
-                "id": id,
-                "unlocked_at": unlocked_at
-            })
-        })
+        .map(|(id, unlocked_at)| json!({"id": id, "unlocked_at": unlocked_at}))
         .collect();
 
     Json(json!({
@@ -904,7 +898,6 @@ async fn trophy_progress_handler(
         "note": "Backend tracking only; not official PSN trophies"
     }))
 }
-
 async fn create_lobby_handler(
     State(state): State<AppState>,
     Json(request): Json<LobbyCreateRequest>,
