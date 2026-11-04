@@ -908,21 +908,16 @@ async fn handle_message(
                 };
             };
 
-            if state.started {
-                return ServerMessage::Error {
-                    code: 1011,
-                    message:
-                        "session_already_started"
-                            .to_string(),
-                };
-            }
-
             let result = sqlx::query(
                 r#"
                 UPDATE lobby_players
                 SET ready = ?
                 WHERE lobby_id = ?
                 AND user_id = ?
+                AND EXISTS (
+                    SELECT 1 FROM lobbies
+                    WHERE lobby_id = ? AND started = 0
+                )
                 "#,
             )
             .bind(if ready {
@@ -932,6 +927,7 @@ async fn handle_message(
             })
             .bind(&session_id)
             .bind(&user_id)
+            .bind(&session_id)
             .execute(db)
             .await;
 
@@ -948,11 +944,28 @@ async fn handle_message(
                 }
 
                 Ok(_) => {
-                    ServerMessage::Error {
-                        code: 1016,
-                        message:
-                            "player_not_in_session"
-                                .to_string(),
+                    match sqlx::query_scalar::<_, i64>(
+                        "SELECT started FROM lobbies WHERE lobby_id = ?",
+                    )
+                    .bind(&session_id)
+                    .fetch_optional(db)
+                    .await
+                    {
+                        Ok(Some(1)) => ServerMessage::Error {
+                            code: 1011,
+                            message: "session_already_started".to_string(),
+                        },
+                        Ok(_) => ServerMessage::Error {
+                            code: 1016,
+                            message: "player_not_in_session".to_string(),
+                        },
+                        Err(error) => {
+                            eprintln!("Failed to inspect lobby state after ready update: {error}");
+                            ServerMessage::Error {
+                                code: 1017,
+                                message: "ready_update_failed".to_string(),
+                            }
+                        }
                     }
                 }
 
