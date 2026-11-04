@@ -365,16 +365,26 @@ async fn home_handler() -> &'static str {
     "KLAY Friday the 13th Private Server v0.5.0"
 }
 
-async fn health_handler(State(state): State<AppState>) -> Json<Value> {
+async fn health_handler(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<Value>) {
     let database = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
+    let status = if database {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
-    Json(json!({
-        "status": "ok",
-        "service": "f13-custom-backend",
-        "version": SERVER_VERSION,
-        "database": if database { "connected" } else { "disconnected" },
-        "public_url": state.public_url
-    }))
+    (
+        status,
+        Json(json!({
+            "status": if database { "ok" } else { "degraded" },
+            "service": "f13-custom-backend",
+            "version": SERVER_VERSION,
+            "database": if database { "connected" } else { "disconnected" },
+            "public_url": state.public_url
+        })),
+    )
 }
 
 async fn protocol_unavailable_handler() -> (StatusCode, Json<Value>) {
