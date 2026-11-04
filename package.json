@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js",
+    "test": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
