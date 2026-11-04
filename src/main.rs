@@ -110,8 +110,7 @@ async fn main() {
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
 
-    if let Some(parent) = sqlite_options
-        .get_filename()
+    if let Some(parent) = std::path::Path::new(sqlite_options.get_filename())
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
