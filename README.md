@@ -1,73 +1,69 @@
-# KLAY Friday the 13th Backend
+# KLAY Friday the 13th Backend — Node.js
 
-Rust/Axum + SQLite service containing a KLAY-local account API and a custom TCP lobby implementation.
+Node.js 22+, Express, better-sqlite3, and the existing KLAY custom TCP frame protocol.
 
-## Compatibility status
+## Run locally
 
-This repository is **not yet a production-compatible backend for the original Friday the 13th: The Game clients**.
+1. Install Node.js 22 or newer.
+2. Run npm install.
+3. Run npm start.
+4. Open http://localhost:8080.
 
-The custom TCP framing uses a KLAY-specific header (magic `KLAY`, version 1, big-endian message/request/payload fields) and JSON messages. There is no verified evidence here that the original PS4 or PS5 game uses this framing, message identifiers, or JSON payloads.
-
-Not implemented or verified:
-- PlayStation Network authentication or Sony-issued identity verification.
-- Original-game matchmaking, game sessions, or game-server transport.
-- The original game's complete API/protocol.
-- DNS redirection or PlayStation client configuration.
-- Official PSN trophy unlocking or platform entitlement changes.
-
-The `/api/v1/auth/psn` and `/api/v1/protocol` routes return HTTP 501 instead of pretending to authenticate PSN users or returning fabricated protocol responses. `/api/v1/login` creates a KLAY-local account only. TCP authentication requires the matching KLAY account token issued by that endpoint.
-
-## Implemented components
-
-- HTTP health and database checks.
-- KLAY-local account creation, session validation, heartbeat, and profile lookup.
-- SQLite-backed lobby membership, ready state, and persisted started state in the custom TCP service.
-- Atomic lobby creation/join/leave operations, capacity enforcement in SQLite, and host transfer when the host leaves or disconnects.
-- Custom offline-match records and KLAY-local achievement records. These are not official platform trophies.
-- TCP frame codec regression tests.
-
-These features operate within this custom protocol; they do not establish compatibility with the original game.
+The server serves the Arabic website from the website directory. It runs HTTP on PORT (default 8080) and the KLAY-specific TCP listener on TCP_PORT (default 9000).
 
 ## Environment
 
-- `HOST` (default `0.0.0.0`)
-- `PORT` (default `8080`)
-- `DATABASE_URL` (SQLite URL; use a persistent mounted volume)
-- `TCP_HOST` (default `0.0.0.0`)
-- `TCP_PORT` (default `9000`)
-- TCP listener accepts up to 128 simultaneous client connections; excess connections are closed.
-- `PUBLIC_URL` (public HTTPS URL)
+HOST=0.0.0.0
+PORT=8080
+DATABASE_URL=sqlite:///data/f13.db
+PUBLIC_URL=https://YOUR-DOMAIN
+TCP_HOST=0.0.0.0
+TCP_PORT=9000
+COOKIE_SECURE=true
 
-Do not use an ephemeral filesystem path for the production SQLite database. Configure a persistent volume and point `DATABASE_URL` at its mounted path. Back up the database before deployments or migrations.
+Epic OAuth server variables:
+EPIC_CLIENT_ID
+EPIC_CLIENT_SECRET
+EPIC_DEPLOYMENT_ID
+EPIC_REDIRECT_URI=https://YOUR-DOMAIN/auth/epic/callback
 
-## Local checks
+Register the exact HTTPS callback URL in Epic Developer Portal. Keep EPIC_CLIENT_SECRET only in backend environment variables. Never add it to website JavaScript or commit it.
 
-```bash
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo test --all-targets
-```
+## Epic OAuth routes
 
-The HTTP service and custom TCP listener run as separate listeners in the same process. Hosting providers must support inbound TCP connections and expose the configured TCP port; an HTTPS web domain alone is insufficient.
+GET /auth/epic/login
+GET /auth/epic/callback
+GET /auth/epic/me
+POST /auth/logout
 
-## API overview
+OAuth uses a cryptographically random state value, a short-lived HttpOnly cookie, a ten-minute database record, one-time state consumption, and a server-side authorization-code exchange. Production requires HTTPS.
 
-- `GET /`
-- `GET /health`
-- `GET /api/v1/database/status`
-- `GET /api/v1/database_check`
-- `POST /api/v1/login` — KLAY-local account only
-- `POST /api/v1/session/heartbeat`
-- `POST /api/v1/session/validate`
-- `GET /api/v1/profiles/me`
-- `GET /api/v1/lobbies`
-- `POST /api/v1/lobbies/create`
-- `GET /api/v1/lobbies/:lobby_id`
-- `POST /api/v1/lobbies/:lobby_id/join`
-- `POST /api/v1/lobbies/:lobby_id/leave`
+## HTTP API
 
-A successful build, health check, or TCP socket connection proves only that the service is running. It does not prove that a PS4/PS5 game client can authenticate or join a match. Do not advertise console compatibility until protocol behavior is established from legitimate client/server traces and tested on target game versions.
+GET / and GET /health
+POST /api/v1/login (KLAY-local test account)
+POST /api/v1/session/heartbeat
+POST /api/v1/session/validate
+GET /api/v1/profiles/me
+POST /api/v1/auth/psn (501; PSN auth is not implemented)
+POST /api/v1/protocol (501; original game protocol is not implemented)
+GET /api/v1/database/status and /api/v1/database_check
+GET /api/v1/server/info
+GET /api/v1/lobbies
+POST /api/v1/lobbies/create
+GET /api/v1/lobbies/:id
+POST /api/v1/lobbies/:id/join
+POST /api/v1/lobbies/:id/leave
+POST /api/v1/trophies/offline-start
+POST /api/v1/trophies/offline-match
+POST /api/v1/trophies/progress
 
-## License
+The TCP listener retains the KLAY-specific 15-byte header (KLAY magic, version 1, big-endian message ID, request ID, payload length) and JSON message types Authenticate, Heartbeat, CreateSession, JoinSession, LeaveSession, SetReady, and StartSession.
 
-MIT
+## Compatibility boundary
+
+Epic OAuth signs in an Epic account to this website only. It does not authenticate PlayStation Network, grant PSN entitlements, or establish PS4/PS5 game-client compatibility. The TCP framing implemented here is KLAY-specific and has not been verified as the original Friday the 13th protocol. KLAY achievement records are not official PSN trophies.
+
+## Hosting
+
+Use npm install as the build command and npm start as the start command. Mount persistent storage for the SQLite database. The hosting provider must support inbound TCP if you need the separate TCP listener; exposing only HTTPS does not expose TCP.
