@@ -1149,3 +1149,90 @@ async fn load_session(
         started: started != 0,
     })
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn load_session_reports_persisted_started_state() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite database should open");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE sessions (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .expect("sessions table should be created");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE lobbies (
+                lobby_id TEXT PRIMARY KEY,
+                started INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .expect("lobbies table should be created");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE lobby_players (
+                lobby_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                ready INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (lobby_id, user_id)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .expect("lobby_players table should be created");
+
+        sqlx::query("INSERT INTO sessions (user_id, display_name) VALUES ('p1', 'Player 1')")
+            .execute(&db)
+            .await
+            .expect("player should be inserted");
+        sqlx::query("INSERT INTO lobbies (lobby_id, started) VALUES ('l1', 0)")
+            .execute(&db)
+            .await
+            .expect("lobby should be inserted");
+        sqlx::query(
+            "INSERT INTO lobby_players (lobby_id, user_id, ready) VALUES ('l1', 'p1', 1)",
+        )
+        .execute(&db)
+        .await
+        .expect("lobby member should be inserted");
+
+        let waiting = load_session(&db, "l1")
+            .await
+            .expect("waiting lobby should load");
+        assert!(!waiting.started);
+        assert_eq!(waiting.players.len(), 1);
+        assert!(waiting.players[0].ready);
+
+        sqlx::query("UPDATE lobbies SET started = 1 WHERE lobby_id = 'l1'")
+            .execute(&db)
+            .await
+            .expect("lobby should be marked started");
+
+        let started = load_session(&db, "l1")
+            .await
+            .expect("started lobby should load");
+        assert!(started.started);
+    }
+}
