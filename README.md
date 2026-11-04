@@ -67,3 +67,8 @@ Epic OAuth signs in an Epic account to this website only. It does not authentica
 ## Hosting
 
 Use npm install as the build command and npm start as the start command. Mount persistent storage for the SQLite database. The hosting provider must support inbound TCP if you need the separate TCP listener; exposing only HTTPS does not expose TCP.
+
+
+## Source layout
+
+The Node.js service in server.js is the active runtime used by npm start. The earlier Rust implementation under src/ is retained as historical/reference source and is not launched by the Node.js start command.
