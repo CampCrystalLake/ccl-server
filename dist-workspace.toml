@@ -14,4 +14,4 @@ targets = [
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false
-allow-dirty = ["ci"]
+allow-dirty = ["ci", "msi"]
