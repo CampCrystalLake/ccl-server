@@ -5,4 +5,3 @@ pub mod tcp;
 pub mod types;
 
 pub use messages::{ClientMessage, ServerMessage};
-pub use packet::Packet;
