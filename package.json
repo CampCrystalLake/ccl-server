@@ -1,0 +1,18 @@
+{
+  "name": "klay-f13-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KLAY Friday the 13th backend in Node.js",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^5.1.0"
+  }
+}
