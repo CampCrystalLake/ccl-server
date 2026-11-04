@@ -21,7 +21,8 @@ The `/api/v1/auth/psn` and `/api/v1/protocol` routes return HTTP 501 instead of 
 
 - HTTP health and database checks.
 - KLAY-local account creation, session validation, heartbeat, and profile lookup.
-- SQLite-backed lobby membership and ready-state operations in the custom TCP service.
+- SQLite-backed lobby membership, ready state, and persisted started state in the custom TCP service.
+- Atomic lobby creation/join/leave operations, capacity enforcement in SQLite, and host transfer when the host leaves or disconnects.
 - Custom offline-match records and KLAY-local achievement records. These are not official platform trophies.
 - TCP frame codec regression tests.
 
