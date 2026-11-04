@@ -658,14 +658,14 @@ async fn handle_message(
                 }
             };
 
-            let lobby = sqlx::query_as::<_, (String, i32)>(
-                "SELECT name, max_players FROM lobbies WHERE lobby_id = ?",
+            let lobby = sqlx::query_as::<_, (String, i32, i64)>(
+                "SELECT name, max_players, started FROM lobbies WHERE lobby_id = ?",
             )
             .bind(&session_id)
             .fetch_optional(&mut *tx)
             .await;
 
-            let Some((_name, _max_players)) = (match lobby {
+            let Some((_name, _max_players, started)) = (match lobby {
                 Ok(lobby) => lobby,
                 Err(error) => {
                     eprintln!("Failed to load TCP lobby: {error}");
@@ -680,6 +680,13 @@ async fn handle_message(
                     message: "session_not_found".to_string(),
                 };
             };
+
+            if started != 0 {
+                return ServerMessage::Error {
+                    code: 1011,
+                    message: "session_already_started".to_string(),
+                };
+            }
 
             if let Err(error) = sqlx::query(
                 "INSERT OR IGNORE INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
@@ -965,110 +972,124 @@ async fn handle_message(
         }
 
         ClientMessage::StartSession => {
-            let Some(user_id) =
-                state.user_id.clone()
-            else {
+            let Some(user_id) = state.user_id.clone() else {
                 return ServerMessage::Error {
                     code: 1002,
-                    message:
-                        "authentication_required"
-                            .to_string(),
+                    message: "authentication_required".to_string(),
                 };
             };
-
-            let Some(session_id) =
-                state.session_id.clone()
-            else {
+            let Some(session_id) = state.session_id.clone() else {
                 return ServerMessage::Error {
                     code: 1010,
-                    message:
-                        "session_required"
-                            .to_string(),
+                    message: "session_required".to_string(),
                 };
             };
 
-            let host =
-                sqlx::query_scalar::<_, String>(
-                    r#"
-                    SELECT host_user_id
-                    FROM lobbies
-                    WHERE lobby_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_optional(db)
-                .await;
+            let mut tx = match db.begin().await {
+                Ok(tx) => tx,
+                Err(error) => {
+                    eprintln!("Failed to begin session start transaction: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_start_failed".to_string(),
+                    };
+                }
+            };
 
-            let Some(host_user_id) =
-                host.ok().flatten()
-            else {
+            let lobby = sqlx::query_as::<_, (String, i64)>(
+                "SELECT host_user_id, started FROM lobbies WHERE lobby_id = ?",
+            )
+            .bind(&session_id)
+            .fetch_optional(&mut *tx)
+            .await;
+
+            let Some((host_user_id, started)) = (match lobby {
+                Ok(lobby) => lobby,
+                Err(error) => {
+                    eprintln!("Failed to load lobby for start: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_start_failed".to_string(),
+                    };
+                }
+            }) else {
                 return ServerMessage::Error {
                     code: 1006,
-                    message:
-                        "session_not_found"
-                            .to_string(),
+                    message: "session_not_found".to_string(),
                 };
             };
 
             if host_user_id != user_id {
                 return ServerMessage::Error {
                     code: 1012,
-                    message:
-                        "host_required"
-                            .to_string(),
+                    message: "host_required".to_string(),
+                };
+            }
+            if started != 0 {
+                return ServerMessage::Error {
+                    code: 1011,
+                    message: "session_already_started".to_string(),
                 };
             }
 
-            let players: i64 =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*)
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_one(db)
-                .await
-                .unwrap_or(0);
+            let (players, not_ready): (i64, i64) = match sqlx::query_as(
+                r#"
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN ready = 0 THEN 1 ELSE 0 END), 0)
+                FROM lobby_players
+                WHERE lobby_id = ?
+                "#,
+            )
+            .bind(&session_id)
+            .fetch_one(&mut *tx)
+            .await
+            {
+                Ok(counts) => counts,
+                Err(error) => {
+                    eprintln!("Failed to validate players before session start: {error}");
+                    return ServerMessage::Error {
+                        code: 1009,
+                        message: "session_start_failed".to_string(),
+                    };
+                }
+            };
 
             if players == 0 {
                 return ServerMessage::Error {
                     code: 1013,
-                    message:
-                        "session_empty"
-                            .to_string(),
+                    message: "session_empty".to_string(),
+                };
+            }
+            if not_ready > 0 {
+                return ServerMessage::Error {
+                    code: 1018,
+                    message: "players_not_ready".to_string(),
                 };
             }
 
-            let not_ready_players: i64 =
-                sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*)
-                    FROM lobby_players
-                    WHERE lobby_id = ?
-                    AND ready = 0
-                    "#,
-                )
-                .bind(&session_id)
-                .fetch_one(db)
-                .await
-                .unwrap_or(0);
-
-            if not_ready_players > 0 {
+            if let Err(error) = sqlx::query(
+                "UPDATE lobbies SET started = 1 WHERE lobby_id = ? AND started = 0",
+            )
+            .bind(&session_id)
+            .execute(&mut *tx)
+            .await
+            {
+                eprintln!("Failed to persist session start: {error}");
                 return ServerMessage::Error {
-                    code: 1018,
-                    message:
-                        "players_not_ready"
-                            .to_string(),
+                    code: 1009,
+                    message: "session_start_failed".to_string(),
+                };
+            }
+
+            if let Err(error) = tx.commit().await {
+                eprintln!("Failed to commit session start: {error}");
+                return ServerMessage::Error {
+                    code: 1009,
+                    message: "session_start_failed".to_string(),
                 };
             }
 
             state.started = true;
-
-            ServerMessage::SessionStarted {
-                session_id,
-            }
+            ServerMessage::SessionStarted { session_id }
         }
     }
 }
@@ -1077,23 +1098,16 @@ async fn load_session(
     db: &SqlitePool,
     session_id: &str,
 ) -> Result<Session, sqlx::Error> {
-    let exists: Option<(String,)> =
-        sqlx::query_as(
-            r#"
-            SELECT lobby_id
-            FROM lobbies
-            WHERE lobby_id = ?
-            "#,
-        )
-        .bind(session_id)
-        .fetch_optional(db)
-        .await?;
+    let started: Option<i64> = sqlx::query_scalar(
+        "SELECT started FROM lobbies WHERE lobby_id = ?",
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
 
-    if exists.is_none() {
-        return Err(
-            sqlx::Error::RowNotFound
-        );
-    }
+    let Some(started) = started else {
+        return Err(sqlx::Error::RowNotFound);
+    };
 
     let rows =
         sqlx::query_as::<_, (String, String, i64)>(
@@ -1125,6 +1139,6 @@ async fn load_session(
     Ok(Session {
         id: session_id.to_string(),
         players,
-        started: false,
+        started: started != 0,
     })
 }
