@@ -892,79 +892,77 @@ async fn create_lobby_handler(
     State(state): State<AppState>,
     Json(request): Json<LobbyCreateRequest>,
 ) -> Json<Value> {
-    let session = sqlx::query_as::<_, (String, String)>(
-        r#"
-        SELECT user_id, display_name
-        FROM sessions
-        WHERE token = ?
-        "#,
-    )
-    .bind(&request.token)
-    .fetch_optional(&state.db)
-    .await;
+    let token = request.token.trim();
+    if token.is_empty() {
+        return Json(json!({"success": false, "error": "missing_token"}));
+    }
 
-    let Some((user_id, display_name)) = session.ok().flatten() else {
-        return Json(json!({
-            "success": false,
-            "error": "invalid_session"
-        }));
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            eprintln!("Failed to begin lobby creation: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
     };
 
-    let lobby_id = Uuid::new_v4().to_string();
+    let session = sqlx::query_as::<_, (String, String)>(
+        "SELECT user_id, display_name FROM sessions WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_optional(&mut *tx)
+    .await;
 
-    let name = request
-        .name
+    let (user_id, display_name) = match session {
+        Ok(Some(session)) => session,
+        Ok(None) => return Json(json!({"success": false, "error": "invalid_session"})),
+        Err(error) => {
+            eprintln!("Failed to validate lobby creation session: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
+
+    let name = request.name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
         .unwrap_or_else(|| format!("{display_name}'s Lobby"));
 
-    let max_players = request
-        .max_players
-        .unwrap_or(DEFAULT_MAX_PLAYERS)
-        .clamp(1, DEFAULT_MAX_PLAYERS);
+    if name.chars().count() > 48 {
+        return Json(json!({"success": false, "error": "lobby_name_too_long"}));
+    }
 
-    let create_result = sqlx::query(
-        r#"
-        INSERT INTO lobbies (lobby_id, name, host_user_id, max_players)
-        VALUES (?, ?, ?, ?)
-        "#,
+    let max_players = request.max_players.unwrap_or(DEFAULT_MAX_PLAYERS)
+        .clamp(1, DEFAULT_MAX_PLAYERS);
+    let lobby_id = Uuid::new_v4().to_string();
+
+    if let Err(error) = sqlx::query(
+        "INSERT INTO lobbies (lobby_id, name, host_user_id, max_players) VALUES (?, ?, ?, ?)",
     )
     .bind(&lobby_id)
     .bind(&name)
     .bind(&user_id)
     .bind(max_players)
-    .execute(&state.db)
-    .await;
-
-    if let Err(error) = create_result {
+    .execute(&mut *tx)
+    .await
+    {
         eprintln!("Failed to create lobby: {error}");
-        return Json(json!({
-            "success": false,
-            "error": "lobby_create_failed"
-        }));
+        return Json(json!({"success": false, "error": "lobby_create_failed"}));
     }
 
-    let player_result = sqlx::query(
-        r#"
-        INSERT INTO lobby_players (lobby_id, user_id, ready)
-        VALUES (?, ?, 0)
-        "#,
+    if let Err(error) = sqlx::query(
+        "INSERT INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
     )
     .bind(&lobby_id)
     .bind(&user_id)
-    .execute(&state.db)
-    .await;
-
-    if let Err(error) = player_result {
+    .execute(&mut *tx)
+    .await
+    {
         eprintln!("Failed to add lobby host: {error}");
+        return Json(json!({"success": false, "error": "lobby_host_join_failed"}));
+    }
 
-        let _ = sqlx::query("DELETE FROM lobbies WHERE lobby_id = ?")
-            .bind(&lobby_id)
-            .execute(&state.db)
-            .await;
-
-        return Json(json!({
-            "success": false,
-            "error": "lobby_host_join_failed"
-        }));
+    if let Err(error) = tx.commit().await {
+        eprintln!("Failed to commit lobby creation: {error}");
+        return Json(json!({"success": false, "error": "database_error"}));
     }
 
     println!("Lobby created: {} host={}", lobby_id, user_id);
@@ -979,7 +977,6 @@ async fn create_lobby_handler(
         "status": "waiting"
     }))
 }
-
 async fn list_lobbies_handler(State(state): State<AppState>) -> Json<Value> {
     let lobbies = sqlx::query_as::<_, (String, String, String, i32)>(
         r#"
@@ -1087,129 +1084,105 @@ async fn join_lobby_handler(
     Path(lobby_id): Path<String>,
     Json(request): Json<LobbyJoinRequest>,
 ) -> Json<Value> {
-    let user_id: Option<String> =
-        sqlx::query_scalar("SELECT user_id FROM sessions WHERE token = ?")
-            .bind(&request.token)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
+    let token = request.token.trim();
+    if token.is_empty() {
+        return Json(json!({"success": false, "error": "missing_token"}));
+    }
 
-    let Some(user_id) = user_id else {
-        return Json(json!({
-            "success": false,
-            "error": "invalid_session"
-        }));
+    let user_id: String = match sqlx::query_scalar(
+        "SELECT user_id FROM sessions WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => return Json(json!({"success": false, "error": "invalid_session"})),
+        Err(error) => {
+            eprintln!("Failed to validate lobby join session: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
+
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            eprintln!("Failed to begin lobby join: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
     };
 
     let lobby = sqlx::query_as::<_, (String, String, i32)>(
-        r#"
-        SELECT name, host_user_id, max_players
-        FROM lobbies
-        WHERE lobby_id = ?
-        "#,
+        "SELECT name, host_user_id, max_players FROM lobbies WHERE lobby_id = ?",
     )
     .bind(&lobby_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-
-    let Some((name, host_user_id, max_players)) = lobby else {
-        return Json(json!({
-            "success": false,
-            "error": "lobby_not_found"
-        }));
-    };
-
-    let already_joined: bool = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM lobby_players
-        WHERE lobby_id = ? AND user_id = ?
-        "#,
-    )
-    .bind(&lobby_id)
-    .bind(&user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0)
-        > 0;
-
-    if already_joined {
-        let players: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?")
-                .bind(&lobby_id)
-                .fetch_one(&state.db)
-                .await
-                .unwrap_or(0);
-
-        return Json(json!({
-            "success": true,
-            "alreadyJoined": true,
-            "lobbyId": lobby_id,
-            "name": name,
-            "hostUserId": host_user_id,
-            "players": players,
-            "maxPlayers": max_players,
-            "status": if players >= max_players as i64 { "full" } else { "waiting" }
-        }));
-    }
-
-    let players: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?")
-        .bind(&lobby_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
-
-    if players >= max_players as i64 {
-        return Json(json!({
-            "success": false,
-            "error": "lobby_full",
-            "players": players,
-            "maxPlayers": max_players
-        }));
-    }
-
-    let result = sqlx::query(
-        r#"
-        INSERT INTO lobby_players (lobby_id, user_id, ready)
-        VALUES (?, ?, 0)
-        "#,
-    )
-    .bind(&lobby_id)
-    .bind(&user_id)
-    .execute(&state.db)
+    .fetch_optional(&mut *tx)
     .await;
 
-    if let Err(error) = result {
-        eprintln!("Failed to join lobby: {error}");
-        return Json(json!({
-            "success": false,
-            "error": "join_failed"
-        }));
-    }
+    let (name, host_user_id, max_players) = match lobby {
+        Ok(Some(lobby)) => lobby,
+        Ok(None) => return Json(json!({"success": false, "error": "lobby_not_found"})),
+        Err(error) => {
+            eprintln!("Failed to load lobby for join: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
 
-    let new_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?")
-            .bind(&lobby_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(players + 1);
+    let inserted = match sqlx::query(
+        "INSERT OR IGNORE INTO lobby_players (lobby_id, user_id, ready) VALUES (?, ?, 0)",
+    )
+    .bind(&lobby_id)
+    .bind(&user_id)
+    .execute(&mut *tx)
+    .await
+    {
+        Ok(result) => result.rows_affected() > 0,
+        Err(error) => {
+            let message = error.to_string();
+            eprintln!("Failed to join lobby {lobby_id}: {error}");
+            if message.contains("lobby_full") {
+                return Json(json!({
+                    "success": false,
+                    "error": "lobby_full",
+                    "maxPlayers": max_players
+                }));
+            }
+            return Json(json!({"success": false, "error": "join_failed"}));
+        }
+    };
+
+    let players: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(*) FROM lobby_players WHERE lobby_id = ?",
+    )
+    .bind(&lobby_id)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            eprintln!("Failed to count lobby players: {error}");
+            return Json(json!({"success": false, "error": "database_error"}));
+        }
+    };
+
+    if let Err(error) = tx.commit().await {
+        eprintln!("Failed to commit lobby join: {error}");
+        return Json(json!({"success": false, "error": "database_error"}));
+    }
 
     println!("Lobby join: lobby={} user={}", lobby_id, user_id);
 
     Json(json!({
         "success": true,
-        "alreadyJoined": false,
+        "alreadyJoined": !inserted,
         "lobbyId": lobby_id,
         "name": name,
         "hostUserId": host_user_id,
-        "players": new_count,
+        "players": players,
         "maxPlayers": max_players,
-        "status": if new_count >= max_players as i64 { "full" } else { "waiting" }
+        "status": if players >= max_players as i64 { "full" } else { "waiting" }
     }))
 }
-
 async fn leave_lobby_handler(
     State(state): State<AppState>,
     Path(lobby_id): Path<String>,
