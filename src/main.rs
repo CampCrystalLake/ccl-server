@@ -191,6 +191,36 @@ async fn main() {
         println!("Lobby players ready column added");
     }
 
+    // Enforce lobby capacity inside SQLite as well as in request handlers.
+    // SQLite serializes writers, so this trigger closes the check-then-insert race
+    // when multiple clients attempt to occupy the final slot simultaneously.
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS enforce_lobby_capacity
+        BEFORE INSERT ON lobby_players
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM lobby_players
+            WHERE lobby_id = NEW.lobby_id
+              AND user_id = NEW.user_id
+        )
+        AND (
+            SELECT COUNT(*)
+            FROM lobby_players
+            WHERE lobby_id = NEW.lobby_id
+        ) >= COALESCE(
+            (SELECT max_players FROM lobbies WHERE lobby_id = NEW.lobby_id),
+            0
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'lobby_full');
+        END
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to create lobby capacity trigger");
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS offline_matches (
