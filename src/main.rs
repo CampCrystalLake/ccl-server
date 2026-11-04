@@ -1307,3 +1307,73 @@ async fn server_info_handler(State(state): State<AppState>) -> Json<Value> {
         ]
     }))
 }
+
+
+#[cfg(test)]
+mod lobby_capacity_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_trigger_rejects_joining_a_full_lobby() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE lobbies (lobby_id TEXT PRIMARY KEY, max_players INTEGER NOT NULL)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE lobby_players (lobby_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (lobby_id, user_id))",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TRIGGER enforce_lobby_capacity
+            BEFORE INSERT ON lobby_players
+            WHEN NOT EXISTS (
+                SELECT 1 FROM lobby_players
+                WHERE lobby_id = NEW.lobby_id AND user_id = NEW.user_id
+            )
+            AND (
+                SELECT COUNT(*) FROM lobby_players WHERE lobby_id = NEW.lobby_id
+            ) >= COALESCE(
+                (SELECT max_players FROM lobbies WHERE lobby_id = NEW.lobby_id),
+                0
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'lobby_full');
+            END
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO lobbies (lobby_id, max_players) VALUES ('lobby-a', 1)")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO lobby_players (lobby_id, user_id) VALUES ('lobby-a', 'player-1')")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let rejected = sqlx::query(
+            "INSERT INTO lobby_players (lobby_id, user_id) VALUES ('lobby-a', 'player-2')",
+        )
+        .execute(&db)
+        .await;
+
+        assert!(rejected.is_err(), "a full lobby must reject additional players");
+    }
+}
