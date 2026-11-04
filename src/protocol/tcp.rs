@@ -1,9 +1,11 @@
 use std::io;
+use std::sync::Arc;
 
 use sqlx::SqlitePool;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::Semaphore,
 };
 
 use super::{
@@ -19,6 +21,7 @@ pub const MSG_JOIN_SESSION: u16 = 0x0004;
 pub const MSG_LEAVE_SESSION: u16 = 0x0005;
 pub const MSG_SET_READY: u16 = 0x0006;
 pub const MSG_START_SESSION: u16 = 0x0007;
+const MAX_TCP_CONNECTIONS: usize = 128;
 
 #[derive(Debug, Clone)]
 struct ConnectionState {
@@ -37,25 +40,32 @@ pub async fn run_tcp_server(
 
     println!("Protocol TCP listening on {addr}");
 
+    let connection_slots = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
+
     loop {
         let (stream, peer) = listener.accept().await?;
+
+        let permit = match connection_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                eprintln!("TCP connection limit reached; rejecting {peer}");
+                drop(stream);
+                continue;
+            }
+        };
 
         println!("TCP client connected: {peer}");
 
         let client_db = db.clone();
 
         tokio::spawn(async move {
-            if let Err(error) =
-                handle_client(stream, client_db).await
-            {
-                eprintln!(
-                    "TCP client error ({peer}): {error}"
-                );
+            let _permit = permit;
+
+            if let Err(error) = handle_client(stream, client_db).await {
+                eprintln!("TCP client error ({peer}): {error}");
             }
 
-            println!(
-                "TCP client disconnected: {peer}"
-            );
+            println!("TCP client disconnected: {peer}");
         });
     }
 }
